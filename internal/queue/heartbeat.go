@@ -59,13 +59,13 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 
 		sys := gatherSystemInfo(config.AppConfig.StoragePath)
 
-		enable := true
+		// disk เต็ม → โชว์ paused ให้แอดมินเห็น (worker มี claim-gate ของตัวเอง
+		// กันหยิบงานตอน disk ใกล้เต็มอยู่แล้ว) — ไม่แตะ enable
 		if sys.DiskTotal > 0 {
 			diskPct := float64(sys.DiskUsed) / float64(sys.DiskTotal) * 100
 			if diskPct >= diskPauseThreshold {
 				status = enums.WorkerStatusPaused
-				enable = false
-				log.Printf("⚠️ Heartbeat: disk usage %.1f%% >= %.0f%% — enable=false", diskPct, diskPauseThreshold)
+				log.Printf("⚠️ Heartbeat: disk usage %.1f%% >= %.0f%% — paused", diskPct, diskPauseThreshold)
 			}
 		}
 
@@ -77,15 +77,18 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 				"pid":         pid,
 				"type":        workerType,
 				"status":      status,
-				"enable":      enable,
 				"activeJobs":  activeJobs,
 				"maxJobs":     1, // 1 worker = 1 job at a time
 				"system":      sys,
 				"heartbeatAt": now,
 				"updatedAt":   now,
 			},
+			// enable = ฟิลด์ที่แอดมินคุมเอง — worker ตั้ง default true แค่ตอน
+			// สร้าง doc ครั้งแรกเท่านั้น ไม่เขียนทับทุก heartbeat (บางเซิร์ฟเวอร์
+			// อาจถูกปิดไว้ ต้องคงค่าที่ตั้งไว้)
 			"$setOnInsert": bson.M{
 				"_id":       uuid.New().String(),
+				"enable":    true,
 				"createdAt": now,
 			},
 		}
@@ -117,12 +120,13 @@ func markOffline(workerID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// ไม่แตะ enable (แอดมินคุมเอง) — status=offline + heartbeat หมดอายุ (3 นาที)
+	// ก็พอให้ enqueuer เลิกนับ worker นี้ และ restart กลับมาไม่ค้าง disabled
 	now := time.Now()
 	_, err := models.WorkerModel.Col().UpdateOne(ctx,
 		bson.M{"workerId": workerID},
 		bson.M{"$set": bson.M{
 			"status":    enums.WorkerStatusOffline,
-			"enable":    false,
 			"updatedAt": now,
 		}},
 	)
