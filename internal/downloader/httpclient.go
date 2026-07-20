@@ -18,9 +18,12 @@ var defaultHeaders = map[string]string{
 }
 
 // originMap maps CDN hostnames to the Origin/Referer they expect.
+// helvid.com = player CDN ของ upload18 — บล็อกด้วย CF ถ้าไม่มี Referer/Origin
+// เป็น upload18.org (playlist + segment โดน gate เดียวกัน)
 var originMap = map[string]string{
 	"surrit.com": "https://missav.ai",
 	"phncdn.com": "https://www.pornhub.com",
+	"helvid.com": "https://upload18.org",
 }
 
 // rateLimitedDomains are CDN domains that enforce rate limiting.
