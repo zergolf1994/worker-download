@@ -184,9 +184,16 @@ func downloadEnabled(ctx context.Context) bool {
 	}
 	cfg, ok := setting.Value.(bson.M)
 	if !ok {
-		if m, ok2 := setting.Value.(map[string]interface{}); ok2 {
-			cfg = bson.M(m)
-		} else {
+		switch v := setting.Value.(type) {
+		case map[string]interface{}:
+			cfg = bson.M(v)
+		case bson.D:
+			// default registry decode document เป็น bson.D ไม่ใช่ bson.M
+			cfg = bson.M{}
+			for _, e := range v {
+				cfg[e.Key] = e.Value
+			}
+		default:
 			return true
 		}
 	}
