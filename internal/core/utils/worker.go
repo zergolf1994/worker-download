@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -43,8 +44,9 @@ type ProcessLogger struct {
 	file *os.File
 }
 
-// NewProcessLogger creates a per-process file logger and redirects global log output
-// to the process file ONLY during execution. The main rotating log stays clean.
+// NewProcessLogger creates a per-process file logger and tees global log output
+// into it during execution — stdout keeps receiving everything, so journalctl
+// shows the job as it runs instead of going silent until it finishes.
 // On retry, it appends to the existing log file instead of overwriting.
 func NewProcessLogger(slug string) *ProcessLogger {
 	logDir := filepath.Join("logs", "process")
@@ -60,13 +62,13 @@ func NewProcessLogger(slug string) *ProcessLogger {
 		return &ProcessLogger{}
 	}
 
-	// Redirect global logger → process file only (main log stays clean)
-	log.SetOutput(f)
+	// tee: stdout (journald) + process file — ไม่ใช่ SetOutput(f) ทับทิ้ง
+	log.SetOutput(io.MultiWriter(logger.GlobalWriter, f))
 
 	return &ProcessLogger{file: f}
 }
 
-// Close restores the global logger to the rotating file only and closes the per-process file.
+// Close restores the global logger to stdout only and closes the per-process file.
 func (pl *ProcessLogger) Close() {
 	log.SetOutput(logger.GlobalWriter)
 	if pl.file != nil {
@@ -79,12 +81,12 @@ func (pl *ProcessLogger) Printf(format string, v ...interface{}) {
 	log.Printf(format, v...)
 }
 
-// LogMain writes a key milestone to BOTH the main rotating log AND the current process file.
-// Use for summary events: start, encode, upload, end, error.
+// LogMain writes a key milestone. Kept as a separate name so milestones stay
+// greppable, but it is now a plain log.Printf — NewProcessLogger already tees
+// output to stdout and the process file, so the old second Fprintf to
+// GlobalWriter would just print the line twice on the console.
 func LogMain(format string, v ...interface{}) {
-	msg := fmt.Sprintf(format, v...)
-	log.Printf("%s", msg)                                                                      // → process file (current log output)
-	fmt.Fprintf(logger.GlobalWriter, "%s %s\n", time.Now().Format("2006/01/02 15:04:05"), msg) // → main rotating log
+	log.Printf(format, v...)
 }
 
 // ─── Old Log Cleanup ──────────────────────────────────────────

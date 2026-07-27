@@ -114,6 +114,29 @@ func StartHeartbeat(ctx context.Context, workerID string) {
 	}
 }
 
+// SetWorkerStatus writes status/activeJobs right away instead of waiting for
+// the next heartbeat tick — จับงานปุ๊บขึ้น busy ปั๊บ จบ/ยกเลิกก็กลับเป็น idle
+// ทันที ไม่ต้องรอถึงนาที
+//
+// paused ไม่ถูกเขียนทับ: สถานะนั้นเป็นของ heartbeat (ดิสก์เต็ม) ถ้าปล่อยให้
+// งานที่เพิ่งจบเซ็ต idle ทับ แอดมินจะเห็นเครื่องที่เต็มแล้วเป็นว่าง
+func SetWorkerStatus(workerID, status string, activeJobs int) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := models.WorkerModel.Col().UpdateOne(ctx,
+		bson.M{"workerId": workerID, "status": bson.M{"$ne": enums.WorkerStatusPaused}},
+		bson.M{"$set": bson.M{
+			"status":     status,
+			"activeJobs": activeJobs,
+			"updatedAt":  time.Now(),
+		}},
+	)
+	if err != nil {
+		log.Printf("⚠️ Failed to set worker status=%s: %v", status, err)
+	}
+}
+
 // markOffline flags the worker offline on graceful shutdown so the admin
 // sees it immediately instead of waiting for the heartbeat TTL to expire.
 func markOffline(workerID string) {

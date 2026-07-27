@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"worker-download/internal/config"
-	"worker-download/internal/core/logger"
 	"worker-download/internal/core/utils"
 	"worker-download/internal/db/database"
 	"worker-download/internal/download"
@@ -24,14 +23,11 @@ func main() {
 	workerID := utils.GenerateWorkerID()
 	log.Printf("🚀 Starting Worker Download %s [Worker: %s]", version, workerID)
 
-	// ── Rotating file logger ──────────────────────────────────
-	logCloser, err := logger.Init(config.AppConfig.LogPath)
-	if err != nil {
-		log.Printf("⚠️ File logging disabled: %v", err)
-	} else {
-		defer logCloser.Close()
-		log.Printf("📝 Logging to: %s", config.AppConfig.LogPath)
-	}
+	// log ทั่วไปออก stdout ให้ systemd/journald เก็บและหมุนให้
+	// (journalctl -u worker-download -f) — ของเดิมเรียก logger.Init ซึ่ง
+	// log.SetOutput ทับ stdout ทำให้ journal ว่างเปล่า และไฟล์ที่หมุนไว้
+	// ก็ไม่มีใครลบ ส่วน log รายงาน (logs/process/{slug}.log) ยังเขียนอยู่
+	// เพราะต้องอัพขึ้น S3 ตอนงานจบ
 
 	// ── MongoDB ───────────────────────────────────────────────
 	if err := database.Connect(); err != nil {
