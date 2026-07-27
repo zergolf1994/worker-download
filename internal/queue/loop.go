@@ -166,9 +166,13 @@ func runJob(ctx context.Context, workerID string, job *models.VideoProcess, hand
 		if job.RetryCount != nil {
 			attempt = *job.RetryCount + 1
 		}
-		if retried {
+		switch {
+		case retried:
 			log.Printf("🔄 Job %s failed (attempt %d/%d) — requeued with backoff: %v", job.ID, attempt, MaxRetries, err)
-		} else {
+		case errors.Is(err, ErrPermanent):
+			// อย่าพิมพ์ "attempt 1/3" — ชวนให้เข้าใจว่ายังเหลือ retry อีก 2 รอบ
+			log.Printf("❌ Job %s failed permanently (no retry — source unusable) — file marked error: %v", job.ID, err)
+		default:
 			log.Printf("❌ Job %s failed permanently (attempt %d/%d) — file marked error: %v", job.ID, attempt, MaxRetries, err)
 		}
 	}
@@ -209,6 +213,12 @@ func downloadEnabled(ctx context.Context) bool {
 
 // categorize maps an error to errorCategory for the admin dashboard.
 func categorize(err error) string {
+	// ต้องเช็คก่อนทุก keyword — RetryOrFail ใช้ category นี้ตัดสินว่าจะ retry
+	// ไหม ถ้าปล่อยให้ตกไปเข้า "gdrive"/"corruption" ก่อนจะโดน retry ตามปกติ
+	if errors.Is(err, ErrPermanent) {
+		return CategoryPermanent
+	}
+
 	e := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(e, "failed to download") || strings.Contains(e, "timeout") || strings.Contains(e, "connection"):

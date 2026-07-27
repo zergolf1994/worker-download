@@ -116,6 +116,12 @@ func DownloadDirectFile(ctx context.Context, rawURL, outputPath string, progress
 		}
 	}
 
+	// ได้ครบตามที่ server บอกไหม (total = -1 คือไม่บอกมา ก็ตรวจไม่ได้)
+	if total > 0 && downloaded != total {
+		return fmt.Errorf("%w: got %d of %d bytes (%.1f%%)",
+			ErrIncompleteDownload, downloaded, total, float64(downloaded)/float64(total)*100)
+	}
+
 	// final progress report
 	if progressFn != nil {
 		t := total

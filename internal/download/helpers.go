@@ -2,6 +2,7 @@ package download
 
 import (
 	"context"
+	goerrors "errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,8 @@ import (
 	"worker-download/internal/core/enums"
 	"worker-download/internal/core/utils"
 	"worker-download/internal/db/models"
+	"worker-download/internal/downloader"
+	"worker-download/internal/queue"
 
 	"github.com/google/uuid"
 	"go.mongodb.org/mongo-driver/bson"
@@ -72,6 +75,22 @@ func isCancelled(ctx context.Context, processID string) bool {
 		return false // doc gone ≠ cancelled; let the run finish and settle
 	}
 	return derefStr(p.Status) == enums.ProcessStatusCancelled
+}
+
+// ─── wrapDownloadErr ─────────────────────────────────────────
+
+// wrapDownloadErr labels a download failure and marks truncated sources as
+// permanent so the loop fails them on the first attempt.
+//
+// Retrying a truncated file is worse than useless: the partial source is kept
+// on disk for retries, so the next attempt skips the download and goes
+// straight back to encoding the same broken input.
+func wrapDownloadErr(stage string, err error, downloadDir string) error {
+	if goerrors.Is(err, downloader.ErrIncompleteDownload) {
+		downloader.Cleanup(downloadDir) // อย่าเก็บไฟล์ครึ่งๆ ไว้ให้รอบหน้าหยิบไปใช้
+		return fmt.Errorf("%s: %v: %w", stage, err, queue.ErrPermanent)
+	}
+	return fmt.Errorf("%s: %w", stage, err)
 }
 
 // ─── Clone media to cloned files ─────────────────────────────

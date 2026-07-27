@@ -363,6 +363,15 @@ func downloadGDrivePublic(ctx context.Context, fileID, outputPath string, onProg
 		return fmt.Errorf("Google Drive public download failed: file too small (%d bytes) — likely an auth/error page, not the actual file", downloaded)
 	}
 
+	// Content-Length ตรงกับที่เขียนลงดิสก์จริงไหม — เกณฑ์ 10KB ข้างบนหลวมเกิน
+	// ไป ไฟล์ที่ขาดไปครึ่งก็ยังผ่าน แล้วไปโผล่เป็น "encode failed" หลังเผา CPU
+	// ไปเป็นชั่วโมง ทั้งที่ต้นเหตุคือโหลดมาไม่ครบ
+	if totalSize > 0 && downloaded != totalSize {
+		os.Remove(outputPath + ".tmp")
+		return fmt.Errorf("%w: incomplete Google Drive download — got %d of %d bytes (%.1f%%)",
+			ErrIncompleteDownload, downloaded, totalSize, float64(downloaded)/float64(totalSize)*100)
+	}
+
 	if err := os.Rename(outputPath+".tmp", outputPath); err != nil {
 		return fmt.Errorf("rename temp file: %w", err)
 	}

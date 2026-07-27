@@ -548,9 +548,19 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 		totalDuration, _ = strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
 	}
 
+	// -fps_mode passthrough กันเรื่องที่กัดเราจริงๆ: ไฟล์ที่ container อ้าง
+	// duration ยาวแต่มีเฟรมจริงนิดเดียว (โหลดมาไม่ครบ) ffmpeg default เป็น CFR
+	// แล้ว "เติม" เฟรมซ้ำให้เต็มความยาว — เคยเจอ 2,700 เฟรมบานเป็นหลักแสน
+	// อัด 4 core นาน 26 นาทีโดยยังไม่ได้ output สักไบต์ passthrough ทำให้
+	// encode เท่าจำนวนเฟรมที่มีจริงเสมอ ไม่ว่า timestamp จะเพี้ยนแค่ไหน
+	//
+	// -err_detect ignore_err ให้เหมือน remux — ไม่งั้น fallback ตายด้วย
+	// สาเหตุเดียวกับที่ทำให้ remux ล้ม (เสียงพัง) แล้วไม่มีทางออก
 	cmd = exec.CommandContext(ctx, "ffmpeg",
 		"-y",
+		"-err_detect", "ignore_err",
 		"-i", inputPath,
+		"-fps_mode", "passthrough",
 		"-c:v", "libx264",
 		"-preset", "fast",
 		"-profile:v", "high",

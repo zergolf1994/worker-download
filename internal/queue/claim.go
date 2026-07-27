@@ -92,6 +92,11 @@ func Complete(ctx context.Context, jobID string) error {
 // MaxRetries — a job fails this many times before going terminal.
 const MaxRetries = 3
 
+// CategoryPermanent marks a failure that retrying cannot fix. Written to
+// errorCategory so the admin can tell "give up, the source is bad" apart from
+// "it broke, we already tried 3 times".
+const CategoryPermanent = "permanent"
+
 // Sentinel errors a JobHandler can return to control settling:
 var (
 	// ErrJobCancelled — admin set status=cancelled mid-run; leave the doc
@@ -100,6 +105,11 @@ var (
 	// ErrJobRequeue — failure is not the job's fault (e.g. disk full);
 	// Release back to pending WITHOUT counting a retry.
 	ErrJobRequeue = errors.New("job requeue")
+	// ErrPermanent — retrying cannot help (source file is truncated/corrupt).
+	// Go terminal on the first attempt instead of burning MaxRetries runs on
+	// input that will never decode: the retry path keeps source.mp4 and skips
+	// the download, so every attempt would re-run the same doomed encode.
+	ErrPermanent = errors.New("permanent failure")
 )
 
 // retryBackoff returns the wait before attempt n runs again (1m, 2m, ...).
@@ -119,7 +129,7 @@ func RetryOrFail(ctx context.Context, job *models.VideoProcess, errMsg string, c
 		attempt = *job.RetryCount + 1
 	}
 
-	if attempt < MaxRetries {
+	if attempt < MaxRetries && category != CategoryPermanent {
 		_, err = models.VideoProcessModel.FindByIDAndUpdate(ctx, job.ID, bson.M{
 			"$set": bson.M{
 				"status":        enums.ProcessStatusPending,

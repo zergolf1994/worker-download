@@ -163,6 +163,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 					return fmt.Errorf("copy ingest: %w", err)
 				}
 			}
+			completeStep(ctx, process.ID, "download")
 		}
 
 	case enums.IngestSourceTypeGDrive:
@@ -195,7 +196,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 					downloader.Cleanup(downloadDir)
 					return queue.ErrJobCancelled
 				}
-				return fmt.Errorf("GDrive download: %w", err)
+				return wrapDownloadErr("GDrive download", err, downloadDir)
 			}
 
 			if isCancelled(ctx, process.ID) {
@@ -203,6 +204,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 				downloader.Cleanup(downloadDir)
 				return queue.ErrJobCancelled
 			}
+			completeStep(ctx, process.ID, "download")
 		}
 
 	case "direct":
@@ -266,8 +268,9 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 						downloader.Cleanup(downloadDir)
 						return queue.ErrJobCancelled
 					}
-					return fmt.Errorf("direct download: %w", err)
+					return wrapDownloadErr("direct download", err, downloadDir)
 				}
+				completeStep(ctx, process.ID, "download")
 			}
 		}
 
@@ -373,7 +376,8 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		if info, err := os.Stat(mp4Path); err == nil {
 			fileSize = info.Size()
 		}
-		completeStep(ctx, process.ID, "download")
+		// download ถูกปิดไปตั้งแต่โหลดเสร็จแล้ว — ของเดิมมาปิดตรงนี้ ทำให้
+		// ระหว่าง encode (เป็นชั่วโมงได้) หน้า admin ยังเห็น download ค้าง 0%
 		completeStep(ctx, process.ID, "merge")
 	}
 
