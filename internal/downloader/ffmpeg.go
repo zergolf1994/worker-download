@@ -168,6 +168,7 @@ func runFFmpegWithProgress(cmd *exec.Cmd, totalDuration float64, onProgress func
 
 	lastPercent := -5
 	var lastLines []string
+	var causeLines []string
 	const maxLastLines = 10
 
 	scanner := bufio.NewScanner(stderr)
@@ -199,6 +200,13 @@ func runFFmpegWithProgress(cmd *exec.Cmd, totalDuration float64, onProgress func
 			lastLines = append(lastLines, line)
 			if len(lastLines) > maxLastLines {
 				lastLines = lastLines[1:]
+			}
+
+			// เหตุผลจริงที่ ffmpeg ยอมแพ้มักโผล่ตั้งแต่กลางทาง แล้วโดน
+			// สถิติของ libx264 ตอนจบดันตกออกจาก 10 บรรทัดท้ายไปหมด
+			// เก็บแยกไว้ ไม่งั้นคนอ่าน (และตัวจับ error) เห็นแต่ "Conversion failed!"
+			if strings.Contains(line, "Decode error rate") {
+				causeLines = append(causeLines, line)
 			}
 
 			if idx := strings.Index(line, "time="); idx >= 0 {
@@ -236,6 +244,9 @@ func runFFmpegWithProgress(cmd *exec.Cmd, totalDuration float64, onProgress func
 				log.Printf("   %s", line)
 			}
 			stderrMsg = strings.Join(lastLines, "\n")
+		}
+		if len(causeLines) > 0 {
+			stderrMsg = strings.Join(causeLines, "\n") + "\n" + stderrMsg
 		}
 		return fmt.Errorf("%w: %s", waitErr, stderrMsg)
 	}
@@ -556,25 +567,20 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 	//
 	// -err_detect ignore_err ให้เหมือน remux — ไม่งั้น fallback ตายด้วย
 	// สาเหตุเดียวกับที่ทำให้ remux ล้ม (เสียงพัง) แล้วไม่มีทางออก
-	cmd = exec.CommandContext(ctx, "ffmpeg",
-		"-y",
-		"-err_detect", "ignore_err",
-		"-i", inputPath,
-		"-fps_mode", "passthrough",
-		"-c:v", "libx264",
-		"-preset", "fast",
-		"-profile:v", "high",
-		"-level", "4.0",
-		"-pix_fmt", "yuv420p",
-		"-crf", "23",
-		"-c:a", "aac",
-		"-b:a", "128k",
-		"-movflags", "+faststart",
-		"-strict", "experimental",
-		outputPath,
-	)
+	err := runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, false), totalDuration, onProgress)
 
-	err := runFFmpegWithProgress(cmd, totalDuration, onProgress)
+	// เสียง decode ไม่ออกสักเฟรม → ffmpeg คืน exit 69 ทิ้งงานทั้งไฟล์ ทั้งที่
+	// วิดีโอ encode จบไปแล้วเรียบร้อย เอาใหม่แบบไม่เอาเสียงดีกว่าปล่อยตกทั้งไฟล์
+	// — คลิปยังดูได้ และเสียงที่ decode ไม่ออกก็ไม่มีอะไรให้เสียอยู่แล้ว
+	//
+	// หมายเหตุ: ตัวที่ทำให้ ffmpeg ยอมแพ้คือ -max_error_rate (default 0.667)
+	// ไม่ใช่ -err_detect — ยกเพดานได้ แต่จะได้แทร็กเสียงเงียบๆ ติดมาเปล่าๆ
+	if err != nil && isAudioDecodeFailure(err) {
+		log.Printf("⚠️  Audio stream is undecodable — retrying without audio")
+		os.Remove(outputPath)
+		err = runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, true), totalDuration, onProgress)
+	}
+
 	if err != nil {
 		return fmt.Errorf("h264 transcode failed: %w", err)
 	}
@@ -589,4 +595,45 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 
 	log.Printf("✅ Transcoded to h264: %s (%.2f MB)", outputPath, float64(info.Size())/1024/1024)
 	return nil
+}
+
+// h264Cmd builds the transcode command; dropAudio omits the audio stream.
+func h264Cmd(ctx context.Context, inputPath, outputPath string, dropAudio bool) *exec.Cmd {
+	args := []string{
+		"-y",
+		"-err_detect", "ignore_err",
+		"-i", inputPath,
+		"-fps_mode", "passthrough",
+		"-c:v", "libx264",
+		"-preset", "fast",
+		"-profile:v", "high",
+		"-level", "4.0",
+		"-pix_fmt", "yuv420p",
+		"-crf", "23",
+	}
+	if dropAudio {
+		args = append(args, "-an")
+	} else {
+		args = append(args, "-c:a", "aac", "-b:a", "128k")
+	}
+	args = append(args, "-movflags", "+faststart", "-strict", "experimental", outputPath)
+	return exec.CommandContext(ctx, "ffmpeg", args...)
+}
+
+// isAudioDecodeFailure reports whether ffmpeg gave up over the AUDIO stream.
+//
+// "Decode error rate N exceeds maximum" is ffmpeg's -max_error_rate check; it
+// names the stream that blew the budget (aist#0:1 = audio input stream). Only
+// treat it as audio when that marker is present — a video stream that fails to
+// decode is a genuinely broken file and must not be silently muted through.
+func isAudioDecodeFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	e := strings.ToLower(err.Error())
+	if !strings.Contains(e, "decode error rate") {
+		return false
+	}
+	return strings.Contains(e, "aist#") || strings.Contains(e, "/aac") ||
+		strings.Contains(e, "/mp3") || strings.Contains(e, "/opus")
 }
