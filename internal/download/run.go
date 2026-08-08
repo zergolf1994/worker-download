@@ -102,7 +102,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		mp4Path = filepath.Join(downloadDir, "source.mp4")
 
 		// Skip download if source already exists (retry after encode failure)
-		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+		if info, ok := reusableSourceFile(mp4Path); ok {
 			log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
 			completeStep(ctx, process.ID, "download")
 		} else {
@@ -163,6 +163,17 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 					return fmt.Errorf("copy ingest: %w", err)
 				}
 			}
+			if ingest.Size > 0 {
+				info, err := os.Stat(mp4Path)
+				if err != nil {
+					downloader.Cleanup(downloadDir)
+					return fmt.Errorf("stat downloaded upload: %w", err)
+				}
+				if info.Size() != ingest.Size {
+					downloader.Cleanup(downloadDir)
+					return fmt.Errorf("upload size mismatch: got %d of %d bytes: %w", info.Size(), ingest.Size, queue.ErrPermanent)
+				}
+			}
 			completeStep(ctx, process.ID, "download")
 		}
 
@@ -172,7 +183,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		mp4Path = filepath.Join(downloadDir, "source.mp4")
 
 		// Skip download if source already exists (retry after encode failure)
-		if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+		if info, ok := reusableSourceFile(mp4Path); ok {
 			log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
 			completeStep(ctx, process.ID, "download")
 		} else {
@@ -259,7 +270,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			mp4Path = filepath.Join(downloadDir, "source.mp4")
 
 			// Skip download if source already exists (retry after encode failure)
-			if info, err := os.Stat(mp4Path); err == nil && info.Size() > 10*1024 {
+			if info, ok := reusableSourceFile(mp4Path); ok {
 				log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
 				completeStep(ctx, process.ID, "download")
 			} else {
@@ -350,6 +361,11 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 	// For direct MP4: ensure h264 + faststart
 	if isDirectMP4 {
+		if err := downloader.ValidateVideoFile(mp4Path); err != nil {
+			downloader.Cleanup(downloadDir)
+			return fmt.Errorf("invalid source video: %v: %w", err, queue.ErrPermanent)
+		}
+
 		log.Printf("🔒 [%s] Waiting for processing lock...", slug)
 		procLock := utils.AcquireProcessingLock("processing")
 		defer procLock.Release()

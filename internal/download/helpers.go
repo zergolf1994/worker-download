@@ -31,6 +31,26 @@ func derefStr(s *string) string {
 	return *s
 }
 
+// reusableSourceFile returns an existing source only when it is large enough
+// and ffprobe confirms that its container has a video stream. Invalid retry
+// leftovers are removed so the caller downloads a clean copy.
+func reusableSourceFile(path string) (os.FileInfo, bool) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, false
+	}
+	if info.Size() <= 10*1024 {
+		_ = os.Remove(path)
+		return nil, false
+	}
+	if err := downloader.ValidateVideoFile(path); err != nil {
+		log.Printf("Invalid cached source %s: %v; removing before retry", path, err)
+		_ = os.Remove(path)
+		return nil, false
+	}
+	return info, true
+}
+
 // ─── Storage Resolution ───────────────────────────────────────
 // เส้นหลักคือ S3 temp/video — fallback เดียวคือ local storage ของเครื่องเอง
 // (ตั้งผ่าน STORAGE_ID/STORAGE_PATH ใน env) SCP/SSH ถูกถอดออกแล้ว

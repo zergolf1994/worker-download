@@ -360,6 +360,34 @@ type CodecInfo struct {
 	Reason       string
 }
 
+// ValidateVideoFile verifies that ffprobe can open the container and find a
+// video stream. File size alone cannot detect truncated MP4 files whose moov
+// atom is missing.
+func ValidateVideoFile(inputPath string) error {
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-select_streams", "v:0",
+		"-show_entries", "stream=codec_name",
+		"-of", "default=noprint_wrappers=1:nokey=1",
+		inputPath,
+	)
+	output, err := cmd.CombinedOutput()
+	detail := strings.TrimSpace(string(output))
+	if len(detail) > 2048 {
+		detail = detail[len(detail)-2048:]
+	}
+	if err != nil {
+		if detail == "" {
+			return fmt.Errorf("ffprobe rejected %s: %w", filepath.Base(inputPath), err)
+		}
+		return fmt.Errorf("ffprobe rejected %s: %w: %s", filepath.Base(inputPath), err, detail)
+	}
+	if detail == "" {
+		return fmt.Errorf("ffprobe found no video stream in %s", filepath.Base(inputPath))
+	}
+	return nil
+}
+
 // DetectCodecs probes video/audio codecs using ffprobe
 func DetectCodecs(inputPath string) (*CodecInfo, error) {
 	cmd := exec.Command("ffprobe",

@@ -59,8 +59,17 @@ func DownloadFromS3(ctx context.Context, storage *models.Storage, objectPath, ou
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
+	partialPath := outputPath + ".part"
+	_ = os.Remove(partialPath)
+
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		lastErr = nil
+		_ = os.Remove(partialPath)
+
 		result, err := client.GetObject(ctx, &s3.GetObjectInput{
 			Bucket: aws.String(s3Cfg.Bucket),
 			Key:    aws.String(objectKey),
@@ -76,10 +85,10 @@ func DownloadFromS3(ctx context.Context, storage *models.Storage, objectPath, ou
 			log.Printf("📦 File size: %.2f MB", float64(*totalSize)/1024/1024)
 		}
 
-		out, err := os.Create(outputPath)
+		out, err := os.Create(partialPath)
 		if err != nil {
 			result.Body.Close()
-			return fmt.Errorf("create output file: %w", err)
+			return fmt.Errorf("create partial output file: %w", err)
 		}
 
 		var written int64
@@ -92,7 +101,7 @@ func DownloadFromS3(ctx context.Context, storage *models.Storage, objectPath, ou
 				if _, wErr := out.Write(buf[:n]); wErr != nil {
 					out.Close()
 					result.Body.Close()
-					os.Remove(outputPath)
+					os.Remove(partialPath)
 					return fmt.Errorf("write error: %w", wErr)
 				}
 				written += int64(n)
@@ -118,23 +127,50 @@ func DownloadFromS3(ctx context.Context, storage *models.Storage, objectPath, ou
 			if readErr != nil {
 				out.Close()
 				result.Body.Close()
-				os.Remove(outputPath)
-				lastErr = readErr
+				os.Remove(partialPath)
+				if totalSize != nil && *totalSize > 0 {
+					lastErr = fmt.Errorf("%w: S3 read stopped at %d of %d bytes: %v", ErrIncompleteDownload, written, *totalSize, readErr)
+				} else {
+					lastErr = fmt.Errorf("S3 read error after %d bytes: %w", written, readErr)
+				}
 				log.Printf("⚠️ S3 attempt %d/3 read error: %v", attempt, readErr)
 				break
 			}
 		}
-		out.Close()
+		closeErr := out.Close()
 		result.Body.Close()
 
 		if lastErr != nil {
+			os.Remove(partialPath)
 			continue
+		}
+		if closeErr != nil {
+			lastErr = fmt.Errorf("close partial output: %w", closeErr)
+			os.Remove(partialPath)
+			continue
+		}
+		if totalSize != nil && *totalSize > 0 && written != *totalSize {
+			lastErr = fmt.Errorf("%w: S3 returned %d of %d bytes", ErrIncompleteDownload, written, *totalSize)
+			os.Remove(partialPath)
+			continue
+		}
+		if err := os.Rename(partialPath, outputPath); err != nil {
+			// Unix replaces atomically. Windows may reject an existing target, so
+			// fall back to removing only after the complete partial is on disk.
+			if removeErr := os.Remove(outputPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				os.Remove(partialPath)
+				return fmt.Errorf("remove stale output file: %w", removeErr)
+			}
+			if retryErr := os.Rename(partialPath, outputPath); retryErr != nil {
+				os.Remove(partialPath)
+				return fmt.Errorf("commit S3 download: %w", retryErr)
+			}
 		}
 
 		log.Printf("✅ Downloaded %.2f MB from S3", float64(written)/1024/1024)
 		return nil
 	}
-	return fmt.Errorf("S3 download failed after 3 attempts: %v", lastErr)
+	return fmt.Errorf("S3 download failed after 3 attempts: %w", lastErr)
 }
 
 // DeleteFromS3 deletes a file from S3-compatible storage
