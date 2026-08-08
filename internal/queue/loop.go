@@ -52,7 +52,14 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 			return
 		}
 
-		// kill switch (download_config.enabled) — shared with the enqueuer
+		// Per-worker drain switch. Admin owns workers.enable: false means finish
+		// an already-claimed job, but do not take another one from the queue.
+		if !workerEnabled(ctx, workerID) {
+			sleepCtx(ctx, claimInterval)
+			continue
+		}
+
+		// Global kill switch shared with the enqueuer.
 		if !downloadEnabled(ctx) {
 			sleepCtx(ctx, claimInterval)
 			continue
@@ -78,6 +85,21 @@ func RunLoop(ctx context.Context, workerID string, handler JobHandler) {
 		}
 		if job == nil {
 			sleepCtx(ctx, claimInterval) // queue empty
+			continue
+		}
+
+		// Close the small check/claim race: if admin disabled this worker after
+		// the first check, return the job before running any handler I/O.
+		if !workerEnabled(ctx, workerID) {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			err := Release(releaseCtx, job.ID)
+			cancel()
+			if err != nil {
+				log.Printf("worker disable: release job %s failed: %v", job.ID, err)
+			} else {
+				log.Printf("worker disabled while claiming; returned job %s to queue", job.ID)
+			}
+			sleepCtx(ctx, claimInterval)
 			continue
 		}
 
@@ -179,6 +201,20 @@ func runJob(ctx context.Context, workerID string, job *models.VideoProcess, hand
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
+
+// workerEnabled reads the admin-controlled switch for this exact worker.
+// Fail closed: if the record cannot be read, taking a new job would defeat
+// the switch. Heartbeat creates a missing record and the next poll retries.
+func workerEnabled(ctx context.Context, workerID string) bool {
+	worker, err := models.WorkerModel.FindOne(ctx, bson.M{"workerId": workerID})
+	if err != nil {
+		if !errors.Is(err, mongo.ErrNoDocuments) && ctx.Err() == nil {
+			log.Printf("Read worker enable failed for %s: %v", workerID, err)
+		}
+		return false
+	}
+	return worker.Enable
+}
 
 // downloadEnabled reads download_config.enabled — missing/malformed = true
 // (fail-open: a broken settings doc must not silently stop every worker).
