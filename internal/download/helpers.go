@@ -44,9 +44,13 @@ func reusableSourceFile(path string) (os.FileInfo, bool) {
 		return nil, false
 	}
 	if err := downloader.ValidateVideoFile(path); err != nil {
-		log.Printf("Invalid cached source %s: %v; removing before retry", path, err)
-		_ = os.Remove(path)
-		return nil, false
+		if goerrors.Is(err, downloader.ErrInvalidVideo) {
+			log.Printf("Invalid cached source %s: %v; removing before retry", path, err)
+			_ = os.Remove(path)
+			return nil, false
+		}
+		log.Printf("Could not validate cached source %s: %v", path, err)
+		return info, true
 	}
 	return info, true
 }
@@ -185,7 +189,7 @@ func DetermineHighestResolution(height int) int {
 	return 360
 }
 
-// softDeleteUploadIngest marks upload ingests as deleted after successful processing.
+// softDeleteUploadIngest marks upload ingests as no longer eligible for processing.
 func softDeleteUploadIngest(ctx context.Context, fileID, slug string) {
 	now := time.Now()
 	result, err := models.IngestModel.Col().UpdateMany(ctx, bson.M{

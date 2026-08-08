@@ -170,6 +170,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 					return fmt.Errorf("stat downloaded upload: %w", err)
 				}
 				if info.Size() != ingest.Size {
+					softDeleteUploadIngest(ctx, file.ID, slug)
 					downloader.Cleanup(downloadDir)
 					return fmt.Errorf("upload size mismatch: got %d of %d bytes: %w", info.Size(), ingest.Size, queue.ErrPermanent)
 				}
@@ -363,6 +364,12 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 	if isDirectMP4 {
 		if err := downloader.ValidateVideoFile(mp4Path); err != nil {
 			downloader.Cleanup(downloadDir)
+			if !goerrors.Is(err, downloader.ErrInvalidVideo) {
+				return fmt.Errorf("validate source video: %w", err)
+			}
+			if sourceType == enums.IngestSourceTypeUpload {
+				softDeleteUploadIngest(ctx, file.ID, slug)
+			}
 			return fmt.Errorf("invalid source video: %v: %w", err, queue.ErrPermanent)
 		}
 

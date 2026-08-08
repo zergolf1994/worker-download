@@ -3,6 +3,7 @@ package downloader
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -377,13 +378,17 @@ func ValidateVideoFile(inputPath string) error {
 		detail = detail[len(detail)-2048:]
 	}
 	if err != nil {
-		if detail == "" {
-			return fmt.Errorf("ffprobe rejected %s: %w", filepath.Base(inputPath), err)
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+			return fmt.Errorf("run ffprobe for %s: %w", filepath.Base(inputPath), err)
 		}
-		return fmt.Errorf("ffprobe rejected %s: %w: %s", filepath.Base(inputPath), err, detail)
+		if detail == "" {
+			return fmt.Errorf("%w: ffprobe rejected %s: %v", ErrInvalidVideo, filepath.Base(inputPath), err)
+		}
+		return fmt.Errorf("%w: ffprobe rejected %s: %v: %s", ErrInvalidVideo, filepath.Base(inputPath), err, detail)
 	}
 	if detail == "" {
-		return fmt.Errorf("ffprobe found no video stream in %s", filepath.Base(inputPath))
+		return fmt.Errorf("%w: ffprobe found no video stream in %s", ErrInvalidVideo, filepath.Base(inputPath))
 	}
 	return nil
 }
