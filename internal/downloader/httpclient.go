@@ -34,6 +34,10 @@ var rateLimitedDomains = map[string]bool{
 
 // httpGet performs an HTTP GET with browser-like headers (ctx-aware — ยกเลิกได้กลางคำขอ).
 func httpGet(ctx context.Context, rawURL string) (*http.Response, error) {
+	return httpGetWithRange(ctx, rawURL, nil)
+}
+
+func httpGetWithRange(ctx context.Context, rawURL string, byteRange *ByteRange) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
@@ -41,6 +45,10 @@ func httpGet(ctx context.Context, rawURL string) (*http.Response, error) {
 
 	for k, v := range defaultHeaders {
 		req.Header.Set(k, v)
+	}
+	if byteRange != nil {
+		end := byteRange.Offset + byteRange.Length - 1
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", byteRange.Offset, end))
 	}
 
 	parsed, err := url.Parse(rawURL)

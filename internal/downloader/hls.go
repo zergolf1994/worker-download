@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -107,26 +108,27 @@ func DownloadHLSSegments(ctx context.Context, m3u8URL string, outputDir string, 
 	errors := make(chan error, len(segments))
 	results := make(chan SegmentResult, len(segments))
 
-	for i, segmentURL := range segments {
+	for i, segment := range segments {
 		wg.Add(1)
-		go func(idx int, url string) {
+		go func(idx int, segment MediaSegment) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
 			if ctx.Err() != nil {
 				errors <- fmt.Errorf("segment %d: %w", idx, context.Cause(ctx))
-				results <- SegmentResult{Index: idx, URL: url, Success: false, Err: ctx.Err()}
+				results <- SegmentResult{Index: idx, URL: segment.URL, Success: false, Err: ctx.Err()}
 				return
 			}
 
 			filename := fmt.Sprintf("segment_%04d.ts", idx)
 			outputPath := filepath.Join(segmentsDir, filename)
 
-			if info, err := os.Stat(outputPath); err == nil && info.Size() >= 188 {
+			if info, err := os.Stat(outputPath); err == nil && info.Size() >= 188 &&
+				(segment.ByteRange == nil || info.Size() == segment.ByteRange.Length) {
 				if validateSegmentFile(outputPath) == nil {
 					atomic.AddInt32(&progress.Completed, 1)
-					results <- SegmentResult{Index: idx, URL: url, Success: true}
+					results <- SegmentResult{Index: idx, URL: segment.URL, Success: true}
 					completed := int(atomic.LoadInt32(&progress.Completed))
 					if progress.OnProgress != nil {
 						progress.OnProgress(completed, progress.Total)
@@ -135,15 +137,15 @@ func DownloadHLSSegments(ctx context.Context, m3u8URL string, outputDir string, 
 				}
 			}
 
-			if err := downloadSegment(ctx, url, outputPath, rateLimited); err != nil {
+			if err := downloadSegment(ctx, segment, outputPath, rateLimited); err != nil {
 				atomic.AddInt32(&progress.Failed, 1)
 				errors <- fmt.Errorf("segment %d: %w", idx, err)
-				results <- SegmentResult{Index: idx, URL: url, Success: false, Err: err}
+				results <- SegmentResult{Index: idx, URL: segment.URL, Success: false, Err: err}
 				return
 			}
 
 			atomic.AddInt32(&progress.Completed, 1)
-			results <- SegmentResult{Index: idx, URL: url, Success: true}
+			results <- SegmentResult{Index: idx, URL: segment.URL, Success: true}
 
 			completed := int(atomic.LoadInt32(&progress.Completed))
 			if progress.OnProgress != nil {
@@ -154,7 +156,7 @@ func DownloadHLSSegments(ctx context.Context, m3u8URL string, outputDir string, 
 				percent := float64(completed) / float64(progress.Total) * 100
 				log.Printf("⬇️  Progress: %d/%d (%.1f%%)", completed, progress.Total, percent)
 			}
-		}(i, segmentURL)
+		}(i, segment)
 	}
 
 	wg.Wait()
@@ -291,7 +293,7 @@ func extractResolutionFolder(resolution string) string {
 	}
 }
 
-func downloadSegment(ctx context.Context, url string, outputPath string, rateLimited bool) error {
+func downloadSegment(ctx context.Context, segment MediaSegment, outputPath string, rateLimited bool) error {
 	var lastErr error
 
 	for attempt := 1; attempt <= MaxRetries; attempt++ {
@@ -300,9 +302,12 @@ func downloadSegment(ctx context.Context, url string, outputPath string, rateLim
 		}
 		acquireRateLimit(rateLimited)
 
-		statusCode, err := downloadFile(ctx, url, outputPath)
+		statusCode, err := downloadFile(ctx, segment, outputPath)
 		if err != nil {
 			lastErr = err
+			if errors.Is(err, ErrByteRangeNotHonored) {
+				return err
+			}
 			if attempt < MaxRetries {
 				var backoff time.Duration
 				if statusCode == http.StatusTooManyRequests {
@@ -387,25 +392,100 @@ func validateSegmentFile(path string) error {
 	return nil
 }
 
-func downloadFile(ctx context.Context, url string, outputPath string) (int, error) {
-	resp, err := httpGet(ctx, url)
+func downloadFile(ctx context.Context, segment MediaSegment, outputPath string) (int, error) {
+	if segment.ByteRange != nil {
+		if info, err := os.Stat(outputPath); err == nil && info.Size() != segment.ByteRange.Length {
+			if err := os.Remove(outputPath); err != nil {
+				return 0, fmt.Errorf("remove stale segment: %w", err)
+			}
+		}
+	}
+
+	resp, err := httpGetWithRange(ctx, segment.URL, segment.ByteRange)
 	if err != nil {
 		return 0, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
+	expectedStatus := http.StatusOK
+	if segment.ByteRange != nil {
+		expectedStatus = http.StatusPartialContent
+	}
+	if resp.StatusCode != expectedStatus {
+		if segment.ByteRange != nil && resp.StatusCode == http.StatusOK {
+			return resp.StatusCode, fmt.Errorf("%w: server returned HTTP 200 for Range request", ErrByteRangeNotHonored)
+		}
 		return resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+	if segment.ByteRange != nil {
+		if err := validateContentRange(resp.Header.Get("Content-Range"), segment.ByteRange); err != nil {
+			return resp.StatusCode, fmt.Errorf("%w: %v", ErrByteRangeNotHonored, err)
+		}
+	}
 
-	out, err := os.Create(outputPath)
+	partialPath := outputPath + ".part"
+	out, err := os.Create(partialPath)
 	if err != nil {
 		return resp.StatusCode, err
 	}
-	defer out.Close()
+	keepPartial := false
+	defer func() {
+		out.Close()
+		if !keepPartial {
+			os.Remove(partialPath)
+		}
+	}()
 
-	_, err = io.Copy(out, resp.Body)
-	return resp.StatusCode, err
+	reader := io.Reader(resp.Body)
+	if segment.ByteRange != nil {
+		reader = io.LimitReader(resp.Body, segment.ByteRange.Length+1)
+	}
+	written, err := io.Copy(out, reader)
+	if err != nil {
+		return resp.StatusCode, err
+	}
+	if segment.ByteRange != nil && written != segment.ByteRange.Length {
+		return resp.StatusCode, fmt.Errorf("%w: expected %d bytes, received %d", ErrIncompleteDownload, segment.ByteRange.Length, written)
+	}
+	if err := out.Close(); err != nil {
+		return resp.StatusCode, err
+	}
+	if err := os.Remove(outputPath); err != nil && !os.IsNotExist(err) {
+		return resp.StatusCode, err
+	}
+	if err := os.Rename(partialPath, outputPath); err != nil {
+		return resp.StatusCode, err
+	}
+	keepPartial = true
+	return resp.StatusCode, nil
+}
+
+func validateContentRange(value string, expected *ByteRange) error {
+	unit, rangeAndSize, ok := strings.Cut(strings.TrimSpace(value), " ")
+	if !ok || !strings.EqualFold(unit, "bytes") {
+		return fmt.Errorf("invalid Content-Range %q", value)
+	}
+	rangeText, _, ok := strings.Cut(rangeAndSize, "/")
+	if !ok {
+		return fmt.Errorf("invalid Content-Range %q", value)
+	}
+	startText, endText, ok := strings.Cut(rangeText, "-")
+	if !ok {
+		return fmt.Errorf("invalid Content-Range %q", value)
+	}
+	start, err := strconv.ParseInt(startText, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid Content-Range %q", value)
+	}
+	end, err := strconv.ParseInt(endText, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid Content-Range %q", value)
+	}
+	expectedEnd := expected.Offset + expected.Length - 1
+	if start != expected.Offset || end != expectedEnd {
+		return fmt.Errorf("Content-Range %q does not match requested bytes %d-%d", value, expected.Offset, expectedEnd)
+	}
+	return nil
 }
 
 // Cleanup removes the directory

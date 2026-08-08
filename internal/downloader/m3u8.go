@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -22,6 +23,23 @@ type StreamInfo struct {
 	Width      int
 	Height     int
 	Bandwidth  int
+}
+
+// ByteRange identifies the byte window occupied by one media segment in a
+// shared resource. HLS expresses this as #EXT-X-BYTERANGE:<length>[@<offset>].
+type ByteRange struct {
+	Length int64
+	Offset int64
+}
+
+// MediaSegment is one entry in an HLS media playlist.
+type MediaSegment struct {
+	URL       string
+	ByteRange *ByteRange
+}
+
+func (segment MediaSegment) String() string {
+	return segment.URL
 }
 
 // ParseMasterPlaylist fetches and parses the M3U8 master playlist
@@ -144,13 +162,13 @@ func SelectHighestResolution(streams []StreamInfo) StreamInfo {
 }
 
 // ParseSegmentPlaylist fetches and parses a segment playlist
-func ParseSegmentPlaylist(ctx context.Context, playlistURL string) ([]string, error) {
+func ParseSegmentPlaylist(ctx context.Context, playlistURL string) ([]MediaSegment, error) {
 	segments, _, err := ParseSegmentPlaylistWithContent(ctx, playlistURL)
 	return segments, err
 }
 
 // ParseSegmentPlaylistWithContent fetches and parses a segment playlist, returning content too
-func ParseSegmentPlaylistWithContent(ctx context.Context, playlistURL string) ([]string, string, error) {
+func ParseSegmentPlaylistWithContent(ctx context.Context, playlistURL string) ([]MediaSegment, string, error) {
 	var lastErr error
 
 	for attempt := 1; attempt <= 5; attempt++ {
@@ -195,8 +213,8 @@ func ParseSegmentPlaylistWithContent(ctx context.Context, playlistURL string) ([
 	return nil, "", fmt.Errorf("failed to fetch segment playlist after 5 attempts: %w", lastErr)
 }
 
-func parseSegmentContent(content string, baseURL string) ([]string, error) {
-	segments := []string{}
+func parseSegmentContent(content string, baseURL string) ([]MediaSegment, error) {
+	segments := []MediaSegment{}
 
 	base, err := url.Parse(baseURL)
 	if err != nil {
@@ -205,11 +223,44 @@ func parseSegmentContent(content string, baseURL string) ([]string, error) {
 	baseDir := base.Scheme + "://" + base.Host + base.Path[:strings.LastIndex(base.Path, "/")+1]
 
 	scanner := bufio.NewScanner(strings.NewReader(content))
+	var pendingRange *ByteRange
+	var previousRangeEnd int64
+	var previousRangeURL string
+	hasPreviousRange := false
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "#EXT-X-BYTERANGE:") {
+			if pendingRange != nil {
+				return nil, fmt.Errorf("byte range tag is not followed by a media URI")
+			}
+
+			value := strings.TrimSpace(strings.TrimPrefix(line, "#EXT-X-BYTERANGE:"))
+			lengthText, offsetText, hasOffset := strings.Cut(value, "@")
+			length, err := strconv.ParseInt(strings.TrimSpace(lengthText), 10, 64)
+			if err != nil || length <= 0 || length == math.MaxInt64 {
+				return nil, fmt.Errorf("invalid byte range length %q", lengthText)
+			}
+
+			offset := int64(-1)
+			if hasOffset {
+				offset, err = strconv.ParseInt(strings.TrimSpace(offsetText), 10, 64)
+				if err != nil || offset < 0 {
+					return nil, fmt.Errorf("invalid byte range offset %q", offsetText)
+				}
+			}
+			if offset >= 0 && offset > math.MaxInt64-(length-1) {
+				return nil, fmt.Errorf("byte range %q overflows int64", value)
+			}
+
+			pendingRange = &ByteRange{Length: length, Offset: offset}
+			continue
+		}
+		if strings.HasPrefix(line, "#") {
 			continue
 		}
 
@@ -225,7 +276,35 @@ func parseSegmentContent(content string, baseURL string) ([]string, error) {
 				segmentURL += "?" + base.RawQuery
 			}
 		}
-		segments = append(segments, segmentURL)
+		segment := MediaSegment{URL: segmentURL}
+		if pendingRange != nil {
+			byteRange := *pendingRange
+			if byteRange.Offset < 0 {
+				if !hasPreviousRange || previousRangeURL != segmentURL {
+					return nil, fmt.Errorf("byte range for %s omits offset without a previous range on the same resource", segmentURL)
+				}
+				byteRange.Offset = previousRangeEnd
+			}
+			if byteRange.Offset > math.MaxInt64-(byteRange.Length-1) {
+				return nil, fmt.Errorf("byte range for %s overflows int64", segmentURL)
+			}
+
+			segment.ByteRange = &byteRange
+			previousRangeEnd = byteRange.Offset + byteRange.Length
+			previousRangeURL = segmentURL
+			hasPreviousRange = true
+			pendingRange = nil
+		} else {
+			hasPreviousRange = false
+			previousRangeURL = ""
+		}
+		segments = append(segments, segment)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("failed to scan segment playlist: %w", err)
+	}
+	if pendingRange != nil {
+		return nil, fmt.Errorf("byte range tag is not followed by a media URI")
 	}
 
 	if len(segments) == 0 {
