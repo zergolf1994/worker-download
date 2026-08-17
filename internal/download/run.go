@@ -21,6 +21,23 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+type uploadDestination uint8
+
+const (
+	uploadDestinationNone uploadDestination = iota
+	uploadDestinationLocal
+	uploadDestinationS3Video
+	uploadDestinationS3Temp
+)
+
+func s3VideoObjectKey(fileID, fileName string) string {
+	return fileID + "/" + fileName
+}
+
+func s3TempObjectKey(now time.Time, fileID, fileName string) string {
+	return fmt.Sprintf("%s/%s_%s", now.Format("2006-01-02"), fileID, fileName)
+}
+
 // Run executes one download job (ported from server-download runProcess).
 //
 // Settling is the queue loop's responsibility — this function only returns:
@@ -422,54 +439,38 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 	}
 
 	// ─── STEP 3: UPLOAD ───────────────────────────────────────
-	// If STORAGE_ID is set (self-hosted), use local storage directly.
-	// Otherwise try S3 temp storage first, fallback to local/SCP.
-	uploadedToS3 := false
-	var s3Storage *models.Storage
-
-	localStorageID := config.AppConfig.StorageId
-	if localStorageID == "" {
-		var s3Err error
-		s3Storage, s3Err = resolveS3TempStorage(ctx)
-		if s3Err != nil {
-			s3Storage = nil
-		}
-	}
-
+	// Prefer durable S3 storage/video and create media directly. If none is
+	// available, preserve the existing local or S3-temp processing path.
+	destination := uploadDestinationNone
 	var storage *models.Storage
+	var objectKey string
+	localStorageID := config.AppConfig.StorageId
 
 	startStep(ctx, process.ID, "upload")
 
-	// key แบ่งตามวันที่ — bucket temp ไม่รก + ตั้ง R2 lifecycle ลบตาม prefix ได้
-	// ⚠ objectKey ตัวนี้ตัวเดียวใช้ทั้งอัพโหลดและเขียนลง ingest.path — ห้ามประกอบแยก
-	//   (ปลายทาง HLS ต้องอ่าน path จาก ingest doc เท่านั้น)
-	objectKey := fmt.Sprintf("%s/%s_%s", time.Now().Format("2006-01-02"), file.ID, fileName)
-
-	if s3Storage != nil {
-		// ─── S3 TEMP UPLOAD ──────────────────────────────────
-		log.Printf("📦 [%s] S3 temp storage resolved: %s", slug, s3Storage.Name)
-		utils.LogMain("📤 [%s] UPLOAD → S3 %s", slug, s3Storage.Name)
-
-		if err := uploader.UploadToS3(ctx, s3Storage, mp4Path, objectKey, pctLogger64(slug, "upload")); err != nil {
-			log.Printf("⚠️  [%s] S3 upload failed: %v — trying fallback", slug, err)
+	if s3VideoStorage, err := resolveS3VideoStorage(ctx); err == nil {
+		objectKey = s3VideoObjectKey(file.ID, fileName)
+		log.Printf("📦 [%s] S3 video storage resolved: %s", slug, s3VideoStorage.Name)
+		utils.LogMain("📤 [%s] UPLOAD → S3 video %s", slug, s3VideoStorage.Name)
+		if err := uploader.UploadToS3(ctx, s3VideoStorage, mp4Path, objectKey, pctLogger64(slug, "upload")); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				downloader.Cleanup(downloadDir)
+				return cause
+			}
+			log.Printf("⚠️  [%s] Direct S3 video upload failed: %v — trying fallback", slug, err)
 		} else {
-			uploadedToS3 = true
-			storage = s3Storage
-			log.Printf("✅ [%s] S3 upload complete", slug)
+			destination = uploadDestinationS3Video
+			storage = s3VideoStorage
+			log.Printf("✅ [%s] Direct S3 video upload complete", slug)
 		}
 	}
 
-	if !uploadedToS3 {
+	if destination == uploadDestinationNone && localStorageID != "" {
 		// ─── FALLBACK: LOCAL (self-hosted) ───────────────────
-		// S3 temp/video เป็นเส้นหลัก — fallback มีแค่เครื่องที่ตั้ง STORAGE_ID
-		// (SCP ถูกถอดออกแล้ว)
 		localStoragePath := config.AppConfig.StoragePath
-
-		if localStoragePath == "" || localStorageID == "" {
-			downloader.Cleanup(downloadDir)
-			return fmt.Errorf("no storage available for upload (S3 temp unreachable, no local STORAGE_ID)")
+		if localStoragePath == "" {
+			return fmt.Errorf("local STORAGE_ID is set but STORAGE_PATH is empty")
 		}
-
 		utils.LogMain("📤 [%s] UPLOAD → local storage (fallback)", slug)
 		log.Printf("📤 [%s] Moving to local storage...", slug)
 		if _, err := uploader.MoveFilesLocal(localStoragePath, file.ID, mp4Path, fileName, &uploader.LocalUploadProgress{
@@ -478,6 +479,30 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			return fmt.Errorf("local move: %w", err)
 		}
 		storage = &models.Storage{ID: localStorageID}
+		destination = uploadDestinationLocal
+	}
+
+	if destination == uploadDestinationNone {
+		// ─── FALLBACK: S3 TEMP → HLS SERVICE ─────────────────
+		s3TempStorage, err := resolveS3TempStorage(ctx)
+		if err != nil {
+			downloader.Cleanup(downloadDir)
+			return fmt.Errorf("no storage available for upload (no S3 video, local, or S3 temp storage)")
+		}
+		// The exact key written here is also persisted in ingest.path.
+		objectKey = s3TempObjectKey(time.Now(), file.ID, fileName)
+		log.Printf("📦 [%s] S3 temp storage resolved: %s", slug, s3TempStorage.Name)
+		utils.LogMain("📤 [%s] UPLOAD → S3 temp %s", slug, s3TempStorage.Name)
+		if err := uploader.UploadToS3(ctx, s3TempStorage, mp4Path, objectKey, pctLogger64(slug, "upload")); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				downloader.Cleanup(downloadDir)
+				return cause
+			}
+			return fmt.Errorf("S3 temp upload: %w", err)
+		}
+		storage = s3TempStorage
+		destination = uploadDestinationS3Temp
+		log.Printf("✅ [%s] S3 temp upload complete", slug)
 	}
 
 	completeStep(ctx, process.ID, "upload")
@@ -492,7 +517,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		shortSide = videoWidth
 	}
 
-	if uploadedToS3 {
+	if destination == uploadDestinationS3Temp {
 		// ─── S3 PATH: Create ingest + set ready_original ────
 		ingestPath := objectKey // ต้องตรงกับ key ที่อัพจริงเสมอ
 		mimeType := "video/mp4"
@@ -509,8 +534,21 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		models.IngestModel.Create(ctx, &ingest)
-		log.Printf("✅ [%s] Created ingest record (S3 temp → HLS service)", slug)
+		existingIngest, findErr := models.IngestModel.FindOne(ctx, bson.M{
+			"fileId":     file.ID,
+			"storageId":  storage.ID,
+			"sourceType": enums.IngestSourceTypeProcessed,
+			"path":       ingestPath,
+			"deletedAt":  nil,
+		})
+		if findErr != nil || existingIngest == nil {
+			if _, err := models.IngestModel.Create(ctx, &ingest); err != nil {
+				return fmt.Errorf("create processed ingest: %w", err)
+			}
+		} else {
+			log.Printf("♻️ [%s] Reusing processed ingest %s", slug, existingIngest.ID)
+		}
+		log.Printf("✅ [%s] Processed ingest ready (S3 temp → HLS service)", slug)
 
 		// Update file → ready_original
 		updateFields := bson.M{"status": enums.FileStatusReadyOriginal, "updatedAt": now}
@@ -523,7 +561,9 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		if fileSize > 0 {
 			updateFields["metadata.size"] = fileSize
 		}
-		models.FileModel.UpdateByID(ctx, file.ID, bson.M{"$set": updateFields})
+		if _, err := models.FileModel.UpdateByID(ctx, file.ID, bson.M{"$set": updateFields}); err != nil {
+			return fmt.Errorf("update file ready_original: %w", err)
+		}
 
 		// Update cloned files → ready_original (no media clone needed)
 		cloneUpdate := bson.M{"status": enums.FileStatusReadyOriginal, "updatedAt": now}
@@ -547,7 +587,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			log.Printf("📋 [%s] Updated %d cloned files → ready_original", slug, cloneResult.ModifiedCount)
 		}
 	} else {
-		// ─── FALLBACK PATH: Create media + set ready ─────────
+		// ─── DIRECT STORAGE PATH: Create media + set ready ───
 		mediaSlug := utils.RandomString(11, true)
 		mimeType := "video/mp4"
 		resPtr := &resolution
@@ -570,10 +610,23 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			CreatedAt: now,
 			UpdatedAt: now,
 		}
-		models.MediaModel.Create(ctx, &media)
-		log.Printf("✅ [%s] Created media record (fallback)", slug)
+		mediaRecord := media
+		existingMedia, findErr := models.MediaModel.FindOne(ctx, bson.M{
+			"fileId":     file.ID,
+			"storageId":  storage.ID,
+			"type":       enums.MediaTypeVideo,
+			"resolution": resolution,
+			"deletedAt":  nil,
+		})
+		if findErr == nil && existingMedia != nil {
+			mediaRecord = *existingMedia
+			log.Printf("♻️ [%s] Reusing original media %s", slug, existingMedia.ID)
+		} else if _, err := models.MediaModel.Create(ctx, &media); err != nil {
+			return fmt.Errorf("create original media: %w", err)
+		}
+		log.Printf("✅ [%s] Original media ready on storage %s", slug, storage.ID)
 
-		cloneMediaToClonedFiles(ctx, file.ID, media, slug)
+		cloneMediaToClonedFiles(ctx, file.ID, mediaRecord, slug)
 
 		// Update file → ready
 		updateFields := bson.M{"status": enums.FileStatusReady, "updatedAt": now}
@@ -586,7 +639,9 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		if fileSize > 0 {
 			updateFields["metadata.size"] = fileSize
 		}
-		models.FileModel.UpdateByID(ctx, file.ID, bson.M{"$set": updateFields})
+		if _, err := models.FileModel.UpdateByID(ctx, file.ID, bson.M{"$set": updateFields}); err != nil {
+			return fmt.Errorf("update file ready: %w", err)
+		}
 
 		// Update cloned files → ready
 		cloneUpdate := bson.M{"status": enums.FileStatusReady, "updatedAt": now}
@@ -613,7 +668,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 	// Soft-delete upload ingest after everything is saved.
 	if sourceType == enums.IngestSourceTypeUpload {
-		if !uploadedToS3 {
+		if destination == uploadDestinationLocal {
 			ingest, err := models.IngestModel.FindOne(ctx, bson.M{
 				"fileId": file.ID, "sourceType": enums.IngestSourceTypeUpload,
 				"deletedAt": bson.M{"$exists": false},

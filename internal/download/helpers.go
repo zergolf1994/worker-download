@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"worker-download/internal/config"
@@ -56,8 +57,32 @@ func reusableSourceFile(path string) (os.FileInfo, bool) {
 }
 
 // ─── Storage Resolution ───────────────────────────────────────
-// เส้นหลักคือ S3 temp/video — fallback เดียวคือ local storage ของเครื่องเอง
-// (ตั้งผ่าน STORAGE_ID/STORAGE_PATH ใน env) SCP/SSH ถูกถอดออกแล้ว
+// Prefer durable S3 storage/video. S3 temp remains the processing path when no
+// directly playable S3 storage is available; local is the machine fallback.
+
+// resolveS3VideoStorage finds directly playable, durable S3 storage. originUrl
+// is required because storage-node/nginx-vod reads the uploaded MP4 through it.
+func resolveS3VideoStorage(ctx context.Context) (*models.Storage, error) {
+	filter := bson.M{
+		"enable":    true,
+		"status":    enums.StorageStatusOnline,
+		"type":      enums.StorageTypeS3,
+		"originUrl": bson.M{"$type": "string", "$ne": ""},
+		"accepts":   bson.M{"$all": []string{enums.StorageAcceptStorage, enums.StorageAcceptVideo}},
+		"$or": []bson.M{
+			{"drainState": "idle"},
+			{"drainState": bson.M{"$exists": false}},
+		},
+	}
+	storage, err := models.StorageModel.FindOne(ctx, filter, options.FindOne().SetSort(bson.D{{Key: "_id", Value: 1}}))
+	if err != nil {
+		return nil, fmt.Errorf("no S3 video storage available")
+	}
+	if storage.OriginURL == nil || strings.TrimSpace(*storage.OriginURL) == "" {
+		return nil, fmt.Errorf("S3 video storage has no origin URL")
+	}
+	return storage, nil
+}
 
 // resolveS3TempStorage finds an S3 storage that accepts ["temp", "video"].
 func resolveS3TempStorage(ctx context.Context) (*models.Storage, error) {

@@ -53,6 +53,7 @@ type Storage struct {
 	Local       *StorageLocalConfig `bson:"local,omitempty" json:"local,omitempty"`
 	S3          *StorageS3Config    `bson:"s3,omitempty" json:"s3,omitempty"`
 	PublicURL   *string             `bson:"publicUrl,omitempty" json:"publicUrl,omitempty"`
+	OriginURL   *string             `bson:"originUrl,omitempty" json:"originUrl,omitempty"`
 	Accepts     []string            `bson:"accepts" json:"accepts"` // upload, video, image, other
 	HeartbeatAt *time.Time          `bson:"heartbeatAt,omitempty" json:"heartbeatAt,omitempty"`
 	Capacity    *StorageCapacity    `bson:"capacity,omitempty" json:"capacity,omitempty"`

@@ -1,6 +1,6 @@
 # Worker Download
 
-Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) — claim งานจาก `video_process` ที่ enqueuer (vdohide-service) เติมไว้ ดาวน์โหลด/ประมวลผลวิดีโอ แล้วอัพขึ้น S3 temp ให้ HLS service ทำต่อ
+Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) — claim งานจาก `video_process` ที่ enqueuer (vdohide-service) เติมไว้ ดาวน์โหลด/ประมวลผลวิดีโอ แล้วบันทึกลง storage ที่พร้อมเล่น
 
 > แทนที่ `server-download` เดิมที่ scan หาไฟล์เอง — ตัวนี้รับงานจากคิวอย่างเดียว
 
@@ -8,7 +8,7 @@ Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) �
 
 - **Queue-based** — atomic claim จาก `video_process` (pending → processing) ตาม priority ไม่มีทางแย่งงานกัน
 - **Sources** — Upload (S3/local ingest), Google Drive (OAuth2), MissAV (playlist), XVideos/PornHub (scraper), Direct URL, HLS/m3u8
-- **S3 temp upload** — เส้นหลัก อัพเป็น `{date}/{fileId}_file_original.mp4` → สร้าง ingest `processed` → file = `ready_original` / fallback: local storage (self-hosted `STORAGE_ID`) → media → `ready`
+- **Storage upload** — เลือก S3 ที่รับ `storage + video` และมี `originUrl` ก่อน อัพเป็น `{fileId}/file_original.mp4` → media → `ready`; หากไม่มีจึง fallback ไป local หรือ S3 temp (`{date}/{fileId}_file_original.mp4` → ingest `processed` → `ready_original`)
 - **Auto Retry + Backoff** — fail → กลับเป็น pending ใน doc เดิม (1m, 2m) ครบ 3 ครั้ง → failed ถาวร + file → `error`
 - **Instant Cancel** — admin เซ็ต `status: cancelled` → watcher (5s) จุดระเบิด context → HTTP/ffmpeg/S3 หยุดทันที + เก็บกวาด temp
 - **Graceful Shutdown** — SIGTERM → คืนงานเข้าคิว (Release) + mark worker offline
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/zergolf1994/worker-download/main/in
 |---|---|---|
 | `-n, -w, --count` | `1` | จำนวน worker instances |
 | `--database-url` | `""` | MongoDB connection string (`DATABASE_URL`) |
-| `--storage-id` | `""` | Local storage ID (ไม่ตั้ง = ใช้ S3 temp เป็นหลัก) |
+| `--storage-id` | `""` | Local storage ID สำหรับ fallback เมื่อไม่มี S3 `storage + video` |
 | `--storage-path` | `/home/files` | Local storage path |
 | `--scraper-url` | `""` | Scraper API (ไม่ตั้ง = อ่านจาก `settings.url_scraping`) |
 | `--uninstall` | — | ถอนการติดตั้ง |
@@ -84,7 +84,7 @@ chmod +x worker-download
 # Required
 DATABASE_URL=mongodb+srv://user:pass@cluster.mongodb.net/platform
 
-# Optional — self-hosted local storage (ไม่ตั้ง = อัพ S3 temp)
+# Optional — self-hosted local fallback
 STORAGE_ID=your-storage-uuid
 STORAGE_PATH=/home/files
 
@@ -138,7 +138,7 @@ vdohide-service (Node)                    worker-download (Go, ตัวนี�
 │   slot ว่าง → files waiting             ├── job loop
 │   → insert video_process pending        │   ResumeOwn → Claim (atomic, priority)
 └── reaper                                │   → download → merge/encode → probe
-    processing ค้าง (claimedAt เก่า)       │   → upload S3 temp | local
+    processing ค้าง (claimedAt เก่า)       │   → upload S3 video | local | S3 temp
     → คืน pending                          │   → ingest/media + propagate clones
                                           │   → Complete | RetryOrFail | Release
                                           └── cancel watcher (ทุก 5s ระหว่างมีงาน)
@@ -164,8 +164,8 @@ pending ──claim──▶ processing ──สำเร็จ──▶ comple
 | `workers` | heartbeat, สถานะ, system info |
 | `files` | อ่าน source, update status (ready/ready_original/error) |
 | `ingests` | อ่าน path ไฟล์ upload / สร้าง record `processed` ให้ HLS |
-| `storages` | S3 temp config, local storage |
-| `medias` | media record (เส้น local fallback) + clone |
+| `storages` | S3 storage/video, S3 temp และ local storage |
+| `medias` | media original สำหรับ S3 video/local + clone |
 | `oauths` | OAuth2 token สำหรับ GDrive |
 | `settings` | `download_config.enabled` (kill switch), `url_scraping` |
 

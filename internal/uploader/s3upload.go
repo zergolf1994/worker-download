@@ -1,6 +1,7 @@
 package uploader
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -29,6 +30,9 @@ const (
 func UploadToS3(ctx context.Context, storage *models.Storage, localPath, objectKey string, onProgress func(uploaded, total int64)) error {
 	if storage.S3 == nil {
 		return fmt.Errorf("storage has no S3 config")
+	}
+	if storage.S3.Endpoint == nil || strings.TrimSpace(*storage.S3.Endpoint) == "" {
+		return fmt.Errorf("storage has no S3 endpoint")
 	}
 
 	s3Cfg := storage.S3
@@ -139,7 +143,7 @@ func uploadMultipart(ctx context.Context, client *s3.Client, bucket, key, localP
 			Key:           aws.String(key),
 			UploadId:      aws.String(uploadID),
 			PartNumber:    aws.Int32(partNum),
-			Body:          strings.NewReader(string(buf[:n])),
+			Body:          bytes.NewReader(buf[:n]),
 			ContentLength: aws.Int64(int64(n)),
 		})
 		if err != nil {
