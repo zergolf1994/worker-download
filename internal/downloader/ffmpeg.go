@@ -472,8 +472,9 @@ func MergeToMP4WithReencode(ctx context.Context, segmentFiles []string, outputPa
 	args = append(args, videoEncoderArgs(encoder)...)
 	args = append(args,
 		"-pix_fmt", "yuv420p",
-		"-c:a", "aac",
-		"-b:a", "128k",
+	)
+	args = append(args, aacStereoArgs("128k")...)
+	args = append(args,
 		"-movflags", "+faststart",
 		"-strict", "experimental",
 		outputPath,
@@ -489,7 +490,9 @@ func MergeToMP4WithReencode(ctx context.Context, segmentFiles []string, outputPa
 		os.Remove(outputPath)
 		cpuArgs := []string{"-y", "-f", "concat", "-safe", "0", "-i", listPath}
 		cpuArgs = append(cpuArgs, videoEncoderArgs(encoderCPU)...)
-		cpuArgs = append(cpuArgs, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-strict", "experimental", outputPath)
+		cpuArgs = append(cpuArgs, "-pix_fmt", "yuv420p")
+		cpuArgs = append(cpuArgs, aacStereoArgs("128k")...)
+		cpuArgs = append(cpuArgs, "-movflags", "+faststart", "-strict", "experimental", outputPath)
 		cpuCmd := exec.CommandContext(ctx, "ffmpeg", cpuArgs...)
 		cpuCmd.Dir = filepath.Dir(listPath)
 		err = runFFmpegWithProgress(cpuCmd, totalDuration, onProgress)
@@ -531,18 +534,20 @@ func RemuxWithFaststart(ctx context.Context, inputPath, outputPath string, onPro
 		totalDuration, _ = strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	args := []string{
 		"-y",
 		"-fflags", "+genpts+igndts+discardcorrupt",
 		"-err_detect", "ignore_err",
 		"-i", inputPath,
 		"-c:v", "copy",
-		"-c:a", "aac",
-		"-b:a", "128k",
+	}
+	args = append(args, aacStereoArgs("128k")...)
+	args = append(args,
 		"-movflags", "+faststart",
 		"-strict", "experimental",
 		outputPath,
 	)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
 	err := runFFmpegWithProgress(cmd, totalDuration, onProgress)
 	if err != nil {
@@ -662,10 +667,18 @@ func h264Cmd(ctx context.Context, inputPath, outputPath string, dropAudio bool, 
 	if dropAudio {
 		args = append(args, "-an")
 	} else {
-		args = append(args, "-c:a", "aac", "-b:a", "128k")
+		args = append(args, aacStereoArgs("128k")...)
 	}
 	args = append(args, "-movflags", "+faststart", "-strict", "experimental", outputPath)
 	return exec.CommandContext(ctx, "ffmpeg", args...)
+}
+
+// aacStereoArgs normalizes arbitrary source audio (including MKV 5.1/7.1 or
+// streams without an explicit channel layout) into the playback profile used
+// by worker-transcode. nginx-vod can otherwise emit invalid ADTS headers for
+// ambiguous multichannel AAC, resulting in HLS streams with 0 Hz / 0 channels.
+func aacStereoArgs(bitrate string) []string {
+	return []string{"-c:a", "aac", "-b:a", bitrate, "-ac", "2", "-ar", "48000"}
 }
 
 // isAudioDecodeFailure reports whether ffmpeg gave up over the AUDIO stream.
