@@ -14,6 +14,7 @@ Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) �
 - **Graceful Shutdown** — SIGTERM → คืนงานเข้าคิว (Release) + mark worker offline
 - **Heartbeat** — รายงานเข้า `workers` ทุก 1 นาที (idle/busy/paused, disk ≥90% = paused + enable=false)
 - **Realtime dashboard** — `:8885` แสดง CPU, RAM, disk/I/O และ progress งานของทุก instance ผ่าน SSE ทุก 1 วินาที (เปิดเว็บโดย worker `@1` ตัวเดียว)
+- **Live process log** — กด `View log` ในแต่ละ job เพื่ออ่าน `logs/process/<slug>.log` แบบ realtime (แสดงท้ายไฟล์สูงสุด 512 KiB)
 - **Realtime progress** — บันทึก `timeline`/`overallPercent` ทุก 1% แต่ process log ยังคง throttle ทุก 10%
 - **Optional NVIDIA GPU** — ทดสอบ NVENC ด้วยการ encode จริงก่อนใช้กับงาน re-encode และ fallback เป็น `libx264` อัตโนมัติ; Dashboard แสดง GPU/VRAM/NVENC เมื่อมี `nvidia-smi`
 - **Log per job** — จบงาน → อัพ `logs/process/<slug>.log` ขึ้น S3 ที่ `logs/download/` แล้วลบ local
