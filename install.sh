@@ -18,6 +18,7 @@ DATABASE_URL=""
 STORAGE_ID=""
 STORAGE_PATH="/home/files"
 SCRAPER_URL=""
+DASHBOARD_PORT="8885"
 
 APP_NAME="worker-download"
 APP_DIR="/opt/$APP_NAME"
@@ -39,6 +40,7 @@ while [[ $# -gt 0 ]]; do
         --storage-id)        STORAGE_ID="$2"; shift 2 ;;
         --storage-path)      STORAGE_PATH="$2"; shift 2 ;;
         --scraper-url)       SCRAPER_URL="$2"; shift 2 ;;
+		--dashboard-port)     DASHBOARD_PORT="$2"; shift 2 ;;
         -h|--help)
             echo "Worker Download Installer"
             echo ""
@@ -52,6 +54,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --storage-id ID      Local storage ID (optional — ไม่ตั้ง = ใช้ S3 temp)"
             echo "  --storage-path DIR   Local storage path (default: /home/files)"
             echo "  --scraper-url URL    Scraper API URL (optional — ไม่ตั้ง = อ่านจาก settings)"
+			echo "  --dashboard-port N   Realtime monitor port (default: 8885)"
             echo "  -h, --help           Show this help"
             echo ""
             echo "Examples:"
@@ -149,6 +152,7 @@ DATABASE_URL=$DATABASE_URL
 STORAGE_ID=$STORAGE_ID
 STORAGE_PATH=$STORAGE_PATH
 SCRAPER_URL=$SCRAPER_URL
+DASHBOARD_PORT=$DASHBOARD_PORT
 EOF
 
 # ─── Systemd service template ─────────────────────────────────
@@ -203,6 +207,7 @@ echo "============================================"
 echo ""
 echo "  Directory:  $APP_DIR"
 echo "  Workers:    $RUNNING / $WORKER_COUNT running"
+echo "  Dashboard:  http://0.0.0.0:$DASHBOARD_PORT (served by worker @1)"
 echo ""
 echo "  Commands:"
 echo "    View logs:   journalctl -u \"${SERVICE_NAME}@*\" -f"

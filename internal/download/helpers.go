@@ -231,8 +231,8 @@ func softDeleteUploadIngest(ctx context.Context, fileID, slug string) {
 	}
 }
 
-// copyFileLocal copies src to dst.
-func copyFileLocal(src, dst string) error {
+// copyFileLocal copies src to dst and reports byte progress.
+func copyFileLocal(src, dst string, onProgress func(done, total int64)) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
@@ -241,13 +241,41 @@ func copyFileLocal(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, in); err != nil {
-		return err
+	buffer := make([]byte, 1024*1024)
+	var copied int64
+	if onProgress != nil {
+		onProgress(0, info.Size())
+	}
+	for {
+		n, readErr := in.Read(buffer)
+		if n > 0 {
+			written, writeErr := out.Write(buffer[:n])
+			copied += int64(written)
+			if onProgress != nil {
+				onProgress(copied, info.Size())
+			}
+			if writeErr != nil {
+				return writeErr
+			}
+			if written != n {
+				return io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
 	}
 	return out.Sync()
 }

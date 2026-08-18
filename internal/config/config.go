@@ -12,8 +12,8 @@ var AppConfig Config
 
 // Config represents the application configuration.
 type Config struct {
-	Port     string
-	MongoURI string
+	DashboardPort string
+	MongoURI      string
 
 	StorageId   string
 	StoragePath string
@@ -31,6 +31,7 @@ func Load() {
 	godotenv.Load()
 
 	AppConfig = Config{
+		DashboardPort:       getEnv("DASHBOARD_PORT", getEnv("PORT", "8885")),
 		MongoURI:            getEnv("DATABASE_URL", "mongodb://localhost:27017"),
 		StorageId:           getEnv("STORAGE_ID", ""),
 		StoragePath:         getEnv("STORAGE_PATH", "./files"),

@@ -10,6 +10,7 @@ import (
 
 	"worker-download/internal/config"
 	"worker-download/internal/core/utils"
+	"worker-download/internal/dashboard"
 	"worker-download/internal/db/database"
 	"worker-download/internal/download"
 	"worker-download/internal/queue"
@@ -47,6 +48,12 @@ func main() {
 		defer close(hbDone)
 		queue.StartHeartbeat(ctx, workerID)
 	}()
+
+	if dashboard.ShouldStart(workerID) {
+		go dashboard.Start(ctx, config.AppConfig.DashboardPort, workerID, config.AppConfig.StoragePath)
+	} else {
+		log.Printf("📺 Download monitor owned by worker @1 (this worker: %s)", workerID)
+	}
 
 	// ── Job loop (blocking จนโดน SIGINT/SIGTERM) ──────────────
 	// shutdown ระหว่างทำงาน → loop จะ Release งานคืนคิวให้เอง

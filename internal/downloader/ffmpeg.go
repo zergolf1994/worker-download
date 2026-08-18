@@ -462,27 +462,38 @@ func MergeToMP4WithReencode(ctx context.Context, segmentFiles []string, outputPa
 	}
 	listFile.Close()
 
-	cmd := exec.CommandContext(ctx, "ffmpeg",
+	encoder := detectH264Encoder()
+	args := []string{
 		"-y",
 		"-f", "concat",
 		"-safe", "0",
 		"-i", listPath,
-		"-c:v", "libx264",
-		"-preset", "fast",
-		"-profile:v", "high",
-		"-level", "4.0",
+	}
+	args = append(args, videoEncoderArgs(encoder)...)
+	args = append(args,
 		"-pix_fmt", "yuv420p",
-		"-crf", "23",
 		"-c:a", "aac",
 		"-b:a", "128k",
 		"-movflags", "+faststart",
 		"-strict", "experimental",
 		outputPath,
 	)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 
 	cmd.Dir = filepath.Dir(listPath)
 
 	err = runFFmpegWithProgress(cmd, totalDuration, onProgress)
+	if err != nil && encoder == encoderNVENC && ctx.Err() == nil {
+		log.Printf("⚠️  NVENC merge failed: %v — retrying with CPU (libx264)", err)
+		disableNVENC()
+		os.Remove(outputPath)
+		cpuArgs := []string{"-y", "-f", "concat", "-safe", "0", "-i", listPath}
+		cpuArgs = append(cpuArgs, videoEncoderArgs(encoderCPU)...)
+		cpuArgs = append(cpuArgs, "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-strict", "experimental", outputPath)
+		cpuCmd := exec.CommandContext(ctx, "ffmpeg", cpuArgs...)
+		cpuCmd.Dir = filepath.Dir(listPath)
+		err = runFFmpegWithProgress(cpuCmd, totalDuration, onProgress)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ffmpeg re-encode failed: %w", err)
 	}
@@ -600,7 +611,15 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 	//
 	// -err_detect ignore_err ให้เหมือน remux — ไม่งั้น fallback ตายด้วย
 	// สาเหตุเดียวกับที่ทำให้ remux ล้ม (เสียงพัง) แล้วไม่มีทางออก
-	err := runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, false), totalDuration, onProgress)
+	encoder := detectH264Encoder()
+	err := runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, false, encoder), totalDuration, onProgress)
+	if err != nil && encoder == encoderNVENC && ctx.Err() == nil {
+		log.Printf("⚠️  NVENC transcode failed: %v — retrying with CPU (libx264)", err)
+		disableNVENC()
+		os.Remove(outputPath)
+		encoder = encoderCPU
+		err = runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, false, encoder), totalDuration, onProgress)
+	}
 
 	// เสียง decode ไม่ออกสักเฟรม → ffmpeg คืน exit 69 ทิ้งงานทั้งไฟล์ ทั้งที่
 	// วิดีโอ encode จบไปแล้วเรียบร้อย เอาใหม่แบบไม่เอาเสียงดีกว่าปล่อยตกทั้งไฟล์
@@ -611,7 +630,7 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 	if err != nil && isAudioDecodeFailure(err) {
 		log.Printf("⚠️  Audio stream is undecodable — retrying without audio")
 		os.Remove(outputPath)
-		err = runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, true), totalDuration, onProgress)
+		err = runFFmpegWithProgress(h264Cmd(ctx, inputPath, outputPath, true, encoder), totalDuration, onProgress)
 	}
 
 	if err != nil {
@@ -631,19 +650,15 @@ func TranscodeToH264(ctx context.Context, inputPath, outputPath string, onProgre
 }
 
 // h264Cmd builds the transcode command; dropAudio omits the audio stream.
-func h264Cmd(ctx context.Context, inputPath, outputPath string, dropAudio bool) *exec.Cmd {
+func h264Cmd(ctx context.Context, inputPath, outputPath string, dropAudio bool, encoder string) *exec.Cmd {
 	args := []string{
 		"-y",
 		"-err_detect", "ignore_err",
 		"-i", inputPath,
 		"-fps_mode", "passthrough",
-		"-c:v", "libx264",
-		"-preset", "fast",
-		"-profile:v", "high",
-		"-level", "4.0",
-		"-pix_fmt", "yuv420p",
-		"-crf", "23",
 	}
+	args = append(args, videoEncoderArgs(encoder)...)
+	args = append(args, "-pix_fmt", "yuv420p")
 	if dropAudio {
 		args = append(args, "-an")
 	} else {

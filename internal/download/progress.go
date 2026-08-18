@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
+	"sync"
 	"time"
 
 	"worker-download/internal/core/enums"
@@ -12,9 +14,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
-// ─── Progress → log (ไม่แตะ DB) ──────────────────────────────
-// % ระหว่างทำงานออก log อย่างเดียว (เข้า per-process log ของ slug นั้น)
-// throttle ทุก 10% — ไฟล์ใหญ่ๆ จะได้ไม่ spam log เป็นแสนบรรทัด
+// Progress is persisted every whole percent for the realtime dashboard, while
+// process logs stay at 10% milestones so large files do not flood journald.
 
 // pctLogger64 — callback แบบ bytes (download/upload)
 func pctLogger64(slug, step string) func(done, total int64) {
@@ -57,10 +58,94 @@ func segLogger(slug string) func(current, total int) {
 	}
 }
 
+func trackedBytes(ctx context.Context, processID, slug, step string) func(done, total int64) {
+	logger := pctLogger64(slug, step)
+	var mu sync.Mutex
+	lastPersisted := -1
+	return func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		logger(done, total)
+		persistPercent(ctx, processID, step, percent(done, total), &lastPersisted)
+	}
+}
+
+func trackedSegments(ctx context.Context, processID, slug string) func(current, total int) {
+	logger := segLogger(slug)
+	var mu sync.Mutex
+	lastPersisted := -1
+	return func(current, total int) {
+		if total <= 0 {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		logger(current, total)
+		persistPercent(ctx, processID, "download", percent(int64(current), int64(total)), &lastPersisted)
+	}
+}
+
+func trackedPercent(ctx context.Context, processID, slug, step string) func(value int) {
+	logger := pctLoggerInt(slug, step)
+	var mu sync.Mutex
+	lastPersisted := -1
+	return func(value int) {
+		mu.Lock()
+		defer mu.Unlock()
+		logger(value)
+		persistPercent(ctx, processID, step, float64(value), &lastPersisted)
+	}
+}
+
+func percent(done, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	value := float64(done) / float64(total) * 100
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func persistPercent(ctx context.Context, processID, step string, value float64, lastPersisted *int) {
+	whole := int(math.Floor(value))
+	if value >= 100 {
+		whole = 100
+	}
+	if whole <= *lastPersisted {
+		return
+	}
+	*lastPersisted = whole
+	overall := stepOverall(step, float64(whole))
+	models.VideoProcessModel.UpdateByID(ctx, processID, bson.M{"$set": bson.M{
+		fmt.Sprintf("timeline.%s.percent", step): float64(whole),
+		"overallPercent":                         overall,
+		"updatedAt":                              time.Now(),
+	}})
+}
+
+func stepOverall(step string, value float64) float64 {
+	switch step {
+	case "download":
+		return value * 0.33
+	case "merge":
+		return 33 + value*0.33
+	case "upload":
+		return 66 + value*0.34
+	default:
+		return value
+	}
+}
+
 // ─── Step boundary updates ───────────────────────────────────
-// เขียน DB เฉพาะตอนเริ่ม/จบแต่ละ step เท่านั้น — ไม่เขียน % เรียลไทม์
-// (ตัด write รัวๆ ระหว่าง download/merge/upload ออกทั้งหมด)
-// overallPercent จึงเดินเป็นขั้น: 0 → 33 (download) → 66 (merge) → 100 (upload)
+// Step boundaries remain explicit so retries always reset the active step.
 
 func startStep(ctx context.Context, processID, step string) {
 	now := time.Now()

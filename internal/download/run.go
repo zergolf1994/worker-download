@@ -151,7 +151,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 			if storageLoaded && ingestStorage.Type == enums.StorageTypeS3 {
 				// Download from S3
-				if err := downloader.DownloadFromS3(ctx, &ingestStorage, ingestPathVal, mp4Path, pctLogger64(slug, "download")); err != nil {
+				if err := downloader.DownloadFromS3(ctx, &ingestStorage, ingestPathVal, mp4Path, trackedBytes(ctx, process.ID, slug, "download")); err != nil {
 					if isCancelled(ctx, process.ID) {
 						downloader.Cleanup(downloadDir)
 						return queue.ErrJobCancelled
@@ -176,7 +176,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 					return fmt.Errorf("ingest file not found: %s", localSrc)
 				}
 				// Copy to download dir so we can work on it
-				if err := copyFileLocal(localSrc, mp4Path); err != nil {
+				if err := copyFileLocal(localSrc, mp4Path, trackedBytes(ctx, process.ID, slug, "download")); err != nil {
 					return fmt.Errorf("copy ingest: %w", err)
 				}
 			}
@@ -219,7 +219,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			if file.SpaceID != nil {
 				fileSpaceId = *file.SpaceID
 			}
-			if err := downloader.DownloadFromGDrive(ctx, source, mp4Path, models.OAuthModel.Col(), fileSpaceId, pctLogger64(slug, "download")); err != nil {
+			if err := downloader.DownloadFromGDrive(ctx, source, mp4Path, models.OAuthModel.Col(), fileSpaceId, trackedBytes(ctx, process.ID, slug, "download")); err != nil {
 				if isCancelled(ctx, process.ID) {
 					log.Printf("⏹️ [%s] Cancelled during GDrive download", slug)
 					downloader.Cleanup(downloadDir)
@@ -251,7 +251,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		if !downloader.IsDirectVideoURL(source) {
 			// HLS / m3u8 path
 			result, err := downloader.DownloadHLSSegments(ctx, source, downloadDir, &downloader.DownloadProgress{
-				OnProgress: segLogger(slug),
+				OnProgress: trackedSegments(ctx, process.ID, slug),
 			})
 			if err != nil {
 				return fmt.Errorf("download: %w", err)
@@ -271,7 +271,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 			startStep(ctx, process.ID, "merge")
 			mp4Path = filepath.Join(downloadDir, fileName)
-			mergeRes, err := downloader.MergeToMP4(ctx, result.SegmentFiles, mp4Path, pctLoggerInt(slug, "merge"))
+			mergeRes, err := downloader.MergeToMP4(ctx, result.SegmentFiles, mp4Path, trackedPercent(ctx, process.ID, slug, "merge"))
 			if err != nil {
 				downloader.Cleanup(downloadDir)
 				if downloader.IsDiskFullError(err) {
@@ -292,7 +292,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 				log.Printf("♻️ [%s] Source file exists (%.2f MB) — skipping download", slug, float64(info.Size())/1024/1024)
 				completeStep(ctx, process.ID, "download")
 			} else {
-				if err := downloader.DownloadDirectFile(ctx, source, mp4Path, pctLogger64(slug, "download")); err != nil {
+				if err := downloader.DownloadDirectFile(ctx, source, mp4Path, trackedBytes(ctx, process.ID, slug, "download")); err != nil {
 					if isCancelled(ctx, process.ID) {
 						downloader.Cleanup(downloadDir)
 						return queue.ErrJobCancelled
@@ -336,7 +336,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		os.MkdirAll(downloadDir, 0755)
 
 		result, err := downloader.DownloadHLSSegments(ctx, m3u8URL, downloadDir, &downloader.DownloadProgress{
-			OnProgress: segLogger(slug),
+			OnProgress: trackedSegments(ctx, process.ID, slug),
 		})
 		if err != nil {
 			return fmt.Errorf("download: %w", err)
@@ -357,7 +357,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 		startStep(ctx, process.ID, "merge")
 		mp4Path = filepath.Join(downloadDir, fileName)
-		mergeRes, err := downloader.MergeToMP4(ctx, result.SegmentFiles, mp4Path, pctLoggerInt(slug, "merge"))
+		mergeRes, err := downloader.MergeToMP4(ctx, result.SegmentFiles, mp4Path, trackedPercent(ctx, process.ID, slug, "merge"))
 		if err != nil {
 			downloader.Cleanup(downloadDir)
 			if downloader.IsDiskFullError(err) {
@@ -397,7 +397,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		startStep(ctx, process.ID, "merge")
 		utils.LogMain("🔄 [%s] ENCODE", slug)
 		faststartPath := filepath.Join(downloadDir, fileName)
-		if err := downloader.EnsureH264Faststart(ctx, mp4Path, faststartPath, pctLoggerInt(slug, "merge")); err != nil {
+		if err := downloader.EnsureH264Faststart(ctx, mp4Path, faststartPath, trackedPercent(ctx, process.ID, slug, "merge")); err != nil {
 			if isCancelled(ctx, process.ID) {
 				downloader.Cleanup(downloadDir)
 				return queue.ErrJobCancelled
@@ -452,7 +452,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		objectKey = s3VideoObjectKey(file.ID, fileName)
 		log.Printf("📦 [%s] S3 video storage resolved: %s", slug, s3VideoStorage.Name)
 		utils.LogMain("📤 [%s] UPLOAD → S3 video %s", slug, s3VideoStorage.Name)
-		if err := uploader.UploadToS3(ctx, s3VideoStorage, mp4Path, objectKey, pctLogger64(slug, "upload")); err != nil {
+		if err := uploader.UploadToS3(ctx, s3VideoStorage, mp4Path, objectKey, trackedBytes(ctx, process.ID, slug, "upload")); err != nil {
 			if cause := context.Cause(ctx); cause != nil {
 				downloader.Cleanup(downloadDir)
 				return cause
@@ -474,7 +474,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		utils.LogMain("📤 [%s] UPLOAD → local storage (fallback)", slug)
 		log.Printf("📤 [%s] Moving to local storage...", slug)
 		if _, err := uploader.MoveFilesLocal(localStoragePath, file.ID, mp4Path, fileName, &uploader.LocalUploadProgress{
-			OnProgress: pctLogger64(slug, "upload"),
+			OnProgress: trackedBytes(ctx, process.ID, slug, "upload"),
 		}); err != nil {
 			return fmt.Errorf("local move: %w", err)
 		}
@@ -493,7 +493,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		objectKey = s3TempObjectKey(time.Now(), file.ID, fileName)
 		log.Printf("📦 [%s] S3 temp storage resolved: %s", slug, s3TempStorage.Name)
 		utils.LogMain("📤 [%s] UPLOAD → S3 temp %s", slug, s3TempStorage.Name)
-		if err := uploader.UploadToS3(ctx, s3TempStorage, mp4Path, objectKey, pctLogger64(slug, "upload")); err != nil {
+		if err := uploader.UploadToS3(ctx, s3TempStorage, mp4Path, objectKey, trackedBytes(ctx, process.ID, slug, "upload")); err != nil {
 			if cause := context.Cause(ctx); cause != nil {
 				downloader.Cleanup(downloadDir)
 				return cause

@@ -13,13 +13,16 @@ Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) �
 - **Instant Cancel** — admin เซ็ต `status: cancelled` → watcher (5s) จุดระเบิด context → HTTP/ffmpeg/S3 หยุดทันที + เก็บกวาด temp
 - **Graceful Shutdown** — SIGTERM → คืนงานเข้าคิว (Release) + mark worker offline
 - **Heartbeat** — รายงานเข้า `workers` ทุก 1 นาที (idle/busy/paused, disk ≥90% = paused + enable=false)
-- **Step-only DB writes** — progress % ออก log เท่านั้น (throttle 10%) DB เขียนแค่ขอบ step (33/66/100)
+- **Realtime dashboard** — `:8885` แสดง CPU, RAM, disk/I/O และ progress งานของทุก instance ผ่าน SSE ทุก 1 วินาที (เปิดเว็บโดย worker `@1` ตัวเดียว)
+- **Realtime progress** — บันทึก `timeline`/`overallPercent` ทุก 1% แต่ process log ยังคง throttle ทุก 10%
+- **Optional NVIDIA GPU** — ทดสอบ NVENC ด้วยการ encode จริงก่อนใช้กับงาน re-encode และ fallback เป็น `libx264` อัตโนมัติ; Dashboard แสดง GPU/VRAM/NVENC เมื่อมี `nvidia-smi`
 - **Log per job** — จบงาน → อัพ `logs/process/<slug>.log` ขึ้น S3 ที่ `logs/download/` แล้วลบ local
 - **Clone propagation** — ไฟล์ที่ `clonedFrom` ต้นฉบับ ได้ status/media ตามอัตโนมัติ
 
 ## Requirements
 
 - **FFmpeg** + **FFprobe** (ต้องอยู่ใน PATH)
+- **NVIDIA driver + `nvidia-smi`** (ไม่บังคับ — ใช้สำหรับ NVENC และ GPU metrics)
 - **MongoDB** (vdohide platform database — replica set)
 - **vdohide-service** รันอยู่ (enqueuer เติมคิว + reaper)
 
@@ -44,6 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/zergolf1994/worker-download/main/in
 | `--storage-id` | `""` | Local storage ID สำหรับ fallback เมื่อไม่มี S3 `storage + video` |
 | `--storage-path` | `/home/files` | Local storage path |
 | `--scraper-url` | `""` | Scraper API (ไม่ตั้ง = อ่านจาก `settings.url_scraping`) |
+| `--dashboard-port` | `8885` | พอร์ต realtime dashboard (worker `@1` เป็นผู้เปิดเว็บ) |
 | `--uninstall` | — | ถอนการติดตั้ง |
 
 ### After install
@@ -57,6 +61,9 @@ journalctl -u "worker-download@1" -f
 
 # Restart workers
 for i in $(seq 1 2); do systemctl restart worker-download@$i; done
+
+# เปิด dashboard (ต้องเปิด firewall/TCP 8885 หากเข้าจากภายนอก)
+http://SERVER_IP:8885
 
 # Stop workers (SIGTERM → คืนงานเข้าคิวก่อนปิด)
 for i in $(seq 1 2); do systemctl stop worker-download@$i; done
@@ -93,6 +100,9 @@ WORKER_ID=download_myhost@1
 
 # Optional — Scraper URL (ไม่ตั้ง = อ่านจาก settings.url_scraping)
 SCRAPER_URL=http://localhost:8081
+
+# Optional — realtime monitor (default: 8885)
+DASHBOARD_PORT=8885
 
 # Optional — log file (default: logs/worker-download.log)
 LOG_PATH=logs/worker-download.log
