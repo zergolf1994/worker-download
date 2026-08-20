@@ -1,5 +1,7 @@
 # Worker Download
 
+When a durable S3 video upload fails, both muxed and separated assets are staged on Temp with their media metadata and marked for Local installation by worker-transfer.
+
 Queue-based download worker สำหรับ [VdoHide](https://vdohide.xyz) — claim งานจาก `video_process` ที่ enqueuer (vdohide-service) เติมไว้ ดาวน์โหลด/ประมวลผลวิดีโอ แล้วบันทึกลง storage ที่พร้อมเล่น
 
 > แทนที่ `server-download` เดิมที่ scan หาไฟล์เอง — ตัวนี้รับงานจากคิวอย่างเดียว

@@ -576,6 +576,9 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		// ─── S3 PATH: Create ingest + set ready_original ────
 		ingestPath := objectKey // ต้องตรงกับ key ที่อัพจริงเสมอ
 		mimeType := "video/mp4"
+		mediaType, installTarget := enums.MediaTypeVideo, "local"
+		layout := config.AppConfig.MediaLayout
+		mediaMetadata := &models.MediaMetadata{Size: fileSize, Width: int(videoWidth), Height: int(videoHeight), Duration: float64(videoDuration), MediaLayout: &layout}
 		ingest := models.Ingest{
 			ID:         newUUID(),
 			FileID:     &file.ID,
@@ -586,8 +589,10 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			MimeType:   &mimeType,
 			Path:       &ingestPath,
 			SourceType: enums.IngestSourceTypeProcessed,
-			CreatedAt:  now,
-			UpdatedAt:  now,
+			MediaType:  &mediaType, Resolution: &resolution, MediaMetadata: mediaMetadata,
+			InstallTarget: &installTarget,
+			CreatedAt:     now,
+			UpdatedAt:     now,
 		}
 		existingIngest, findErr := models.IngestModel.FindOne(ctx, bson.M{
 			"fileId":     file.ID,
