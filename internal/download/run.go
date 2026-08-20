@@ -109,6 +109,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 	var mp4Path string
 	var fileSize int64
 	isDirectMP4 := false
+	var splitAssets []downloader.SplitAsset
 
 	// ─── STEP 1: DOWNLOAD ─────────────────────────────────────
 
@@ -377,8 +378,61 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		return queue.ErrJobCancelled
 	}
 
-	// For direct MP4: ensure h264 + faststart
-	if isDirectMP4 {
+	// Separated layout: preserve every audio/text-subtitle stream before the
+	// legacy normalizer selects only the default audio stream.
+	if config.AppConfig.MediaLayout == "separated" {
+		if err := downloader.ValidateVideoFile(mp4Path); err != nil {
+			downloader.Cleanup(downloadDir)
+			if !goerrors.Is(err, downloader.ErrInvalidVideo) {
+				return fmt.Errorf("validate source video: %w", err)
+			}
+			if sourceType == enums.IngestSourceTypeUpload {
+				softDeleteUploadIngest(ctx, file.ID, slug)
+			}
+			return fmt.Errorf("invalid source video: %v: %w", err, queue.ErrPermanent)
+		}
+
+		if isDirectMP4 {
+			log.Printf("🔒 [%s] Waiting for processing lock...", slug)
+			procLock := utils.AcquireProcessingLock("processing")
+			defer procLock.Release()
+		}
+
+		startStep(ctx, process.ID, "merge")
+		utils.LogMain("🧩 [%s] SPLIT video/audio/subtitle", slug)
+		splitDir := filepath.Join(downloadDir, "separated")
+		assets, err := downloader.SplitMedia(ctx, mp4Path, splitDir, trackedPercent(ctx, process.ID, slug, "merge"))
+		if err != nil {
+			if isCancelled(ctx, process.ID) {
+				downloader.Cleanup(downloadDir)
+				return queue.ErrJobCancelled
+			}
+			if downloader.IsDiskFullError(err) {
+				downloader.Cleanup(downloadDir)
+				return fmt.Errorf("disk full: %v: %w", err, queue.ErrJobRequeue)
+			}
+			return fmt.Errorf("split media: %w", err)
+		}
+		splitAssets = assets
+		videoPath := ""
+		for _, asset := range splitAssets {
+			if asset.Kind == downloader.SplitAssetVideo {
+				videoPath = asset.Path
+				fileSize = asset.Size
+				break
+			}
+		}
+		if videoPath == "" {
+			return fmt.Errorf("split media produced no video asset")
+		}
+		if mp4Path != videoPath {
+			os.Remove(mp4Path)
+		}
+		mp4Path = videoPath
+		completeStep(ctx, process.ID, "merge")
+	} else if isDirectMP4 {
+		// Legacy muxed layout: ensure h264 + faststart while retaining the
+		// default audio stream inside file_original.mp4.
 		if err := downloader.ValidateVideoFile(mp4Path); err != nil {
 			downloader.Cleanup(downloadDir)
 			if !goerrors.Is(err, downloader.ErrInvalidVideo) {
@@ -406,7 +460,6 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 				downloader.Cleanup(downloadDir)
 				return fmt.Errorf("disk full: %v: %w", err, queue.ErrJobRequeue)
 			}
-			// Don't cleanup on encode failure — keep source.mp4 for retry
 			return fmt.Errorf("H264 encode failed: %w", err)
 		}
 		if mp4Path != faststartPath {
@@ -416,8 +469,6 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		if info, err := os.Stat(mp4Path); err == nil {
 			fileSize = info.Size()
 		}
-		// download ถูกปิดไปตั้งแต่โหลดเสร็จแล้ว — ของเดิมมาปิดตรงนี้ ทำให้
-		// ระหว่าง encode (เป็นชั่วโมงได้) หน้า admin ยังเห็น download ค้าง 0%
 		completeStep(ctx, process.ID, "merge")
 	}
 
@@ -436,6 +487,10 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 	if vi != nil {
 		videoWidth, videoHeight, videoDuration = vi.Width, vi.Height, vi.Duration
 		log.Printf("📐 [%s] Probed: %dx%d, dur=%ds", slug, videoWidth, videoHeight, videoDuration)
+	}
+
+	if len(splitAssets) > 0 {
+		return completeSeparatedMedia(ctx, process, file, sourceType, slug, downloadDir, splitAssets, videoWidth, videoHeight, videoDuration)
 	}
 
 	// ─── STEP 3: UPLOAD ───────────────────────────────────────

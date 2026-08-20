@@ -665,7 +665,7 @@ func h264Cmd(ctx context.Context, inputPath, outputPath string, dropAudio bool, 
 	args = append(args, videoEncoderArgs(encoder)...)
 	args = append(args, "-pix_fmt", "yuv420p")
 	if dropAudio {
-		args = append(args, "-an")
+		args = append(args, "-map", "0:v:0", "-an", "-sn", "-dn")
 	} else {
 		args = append(args, aacStereoArgs("128k")...)
 	}

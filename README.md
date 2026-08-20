@@ -105,6 +105,9 @@ SCRAPER_URL=http://localhost:8081
 # Optional — realtime monitor (default: 8885)
 DASHBOARD_PORT=8885
 
+# Output layout: muxed (legacy) or separated (video-only + audio/subtitle media)
+MEDIA_LAYOUT=muxed
+
 # Optional — log file (default: logs/worker-download.log)
 LOG_PATH=logs/worker-download.log
 ```

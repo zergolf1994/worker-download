@@ -21,6 +21,10 @@ type Config struct {
 
 	// Number of multipart S3 parts uploaded in parallel.
 	S3UploadConcurrency int
+	// MediaLayout controls the output produced for new originals:
+	// muxed = video+default audio in file_original.mp4 (legacy)
+	// separated = video-only original plus independent audio/subtitle medias.
+	MediaLayout string
 
 	LogPath string // Path to rotating log file (env: LOG_PATH)
 }
@@ -37,7 +41,17 @@ func Load() {
 		StoragePath:         getEnv("STORAGE_PATH", "./files"),
 		ScraperURL:          getEnv("SCRAPER_URL", ""),
 		S3UploadConcurrency: getIntEnv("S3_UPLOAD_CONCURRENCY", 3, 1, 8),
+		MediaLayout:         getMediaLayoutEnv(),
 		LogPath:             getEnv("LOG_PATH", "logs/worker-download.log"),
+	}
+}
+
+func getMediaLayoutEnv() string {
+	switch getEnv("MEDIA_LAYOUT", "muxed") {
+	case "separated":
+		return "separated"
+	default:
+		return "muxed"
 	}
 }
 

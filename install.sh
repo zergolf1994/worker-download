@@ -19,6 +19,7 @@ STORAGE_ID=""
 STORAGE_PATH="/home/files"
 SCRAPER_URL=""
 DASHBOARD_PORT="8885"
+MEDIA_LAYOUT="muxed"
 
 APP_NAME="worker-download"
 APP_DIR="/opt/$APP_NAME"
@@ -41,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --storage-path)      STORAGE_PATH="$2"; shift 2 ;;
         --scraper-url)       SCRAPER_URL="$2"; shift 2 ;;
 		--dashboard-port)     DASHBOARD_PORT="$2"; shift 2 ;;
+		--media-layout)       MEDIA_LAYOUT="$2"; shift 2 ;;
         -h|--help)
             echo "Worker Download Installer"
             echo ""
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --storage-path DIR   Local storage path (default: /home/files)"
             echo "  --scraper-url URL    Scraper API URL (optional — ไม่ตั้ง = อ่านจาก settings)"
 			echo "  --dashboard-port N   Realtime monitor port (default: 8885)"
+			echo "  --media-layout MODE  muxed or separated (default: muxed)"
             echo "  -h, --help           Show this help"
             echo ""
             echo "Examples:"
@@ -73,6 +76,11 @@ while [[ $# -gt 0 ]]; do
             print_error "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [[ "$MEDIA_LAYOUT" != "muxed" && "$MEDIA_LAYOUT" != "separated" ]]; then
+    print_error "--media-layout must be muxed or separated"
+    exit 1
+fi
 
 # ─── Uninstall ────────────────────────────────────────────────
 if [ "$UNINSTALL" = true ]; then
@@ -153,6 +161,7 @@ STORAGE_ID=$STORAGE_ID
 STORAGE_PATH=$STORAGE_PATH
 SCRAPER_URL=$SCRAPER_URL
 DASHBOARD_PORT=$DASHBOARD_PORT
+MEDIA_LAYOUT=$MEDIA_LAYOUT
 EOF
 
 # ─── Systemd service template ─────────────────────────────────

@@ -166,6 +166,9 @@ func cloneMediaToClonedFiles(ctx context.Context, sourceFileID string, media mod
 		if media.Resolution != nil {
 			filter["resolution"] = *media.Resolution
 		}
+		if media.FileName != nil {
+			filter["fileName"] = *media.FileName
+		}
 		existCount, _ := models.MediaModel.CountDocuments(ctx, filter)
 		if existCount > 0 {
 			continue
@@ -181,6 +184,8 @@ func cloneMediaToClonedFiles(ctx context.Context, sourceFileID string, media mod
 			Resolution: media.Resolution,
 			StorageID:  media.StorageID,
 			Slug:       slug11,
+			Path:       media.Path,
+			SourceHash: media.SourceHash,
 			FileID:     &clonedFile.ID,
 			Metadata:   media.Metadata,
 			CreatedAt:  now,

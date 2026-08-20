@@ -25,6 +25,14 @@ func TestH264CmdNormalizesAudioToStereo48K(t *testing.T) {
 	}
 }
 
+func TestH264CmdVideoOnlyDropsNonVideoStreams(t *testing.T) {
+	cmd := h264Cmd(context.Background(), "source.mkv", "output.mp4", true, encoderCPU)
+	want := []string{"-map", "0:v:0", "-an", "-sn", "-dn"}
+	if !containsArgs(cmd.Args, want) {
+		t.Fatalf("h264Cmd args = %v, want sequence %v", cmd.Args, want)
+	}
+}
+
 func containsArgs(args, sequence []string) bool {
 	for i := 0; i+len(sequence) <= len(args); i++ {
 		if reflect.DeepEqual(args[i:i+len(sequence)], sequence) {

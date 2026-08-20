@@ -8,20 +8,23 @@ import (
 
 // FileMetadata holds embedded metadata for a File.
 type FileMetadata struct {
-	Description *string     `bson:"description,omitempty" json:"description,omitempty"`
-	Views       interface{} `bson:"views,omitempty" json:"views,omitempty"`
-	Duration    *float64    `bson:"duration,omitempty" json:"duration,omitempty"`
-	Highest     *int        `bson:"highest,omitempty" json:"highest,omitempty"`
-	MimeType    *string     `bson:"mimeType,omitempty" json:"mimeType,omitempty"`
-	Size        interface{} `bson:"size,omitempty" json:"size,omitempty"`
-	TrashedAt   *time.Time  `bson:"trashedAt,omitempty" json:"trashedAt,omitempty"`
-	TrashedBy   *string     `bson:"trashedBy,omitempty" json:"trashedBy,omitempty"`
-	DeletedAt   *time.Time  `bson:"deletedAt,omitempty" json:"deletedAt,omitempty"`
-	DeletedBy   *string     `bson:"deletedBy,omitempty" json:"deletedBy,omitempty"`
-	Source      *string     `bson:"source,omitempty" json:"source,omitempty"`
-	SourceType  *string     `bson:"sourceType,omitempty" json:"sourceType,omitempty"`
-	SourceHash  *string     `bson:"sourceHash,omitempty" json:"sourceHash,omitempty"`
-	Playlist    *string     `bson:"playlist,omitempty" json:"playlist,omitempty"`
+	Description        *string     `bson:"description,omitempty" json:"description,omitempty"`
+	Views              interface{} `bson:"views,omitempty" json:"views,omitempty"`
+	Duration           *float64    `bson:"duration,omitempty" json:"duration,omitempty"`
+	Highest            *int        `bson:"highest,omitempty" json:"highest,omitempty"`
+	MimeType           *string     `bson:"mimeType,omitempty" json:"mimeType,omitempty"`
+	Size               interface{} `bson:"size,omitempty" json:"size,omitempty"`
+	TrashedAt          *time.Time  `bson:"trashedAt,omitempty" json:"trashedAt,omitempty"`
+	TrashedBy          *string     `bson:"trashedBy,omitempty" json:"trashedBy,omitempty"`
+	DeletedAt          *time.Time  `bson:"deletedAt,omitempty" json:"deletedAt,omitempty"`
+	DeletedBy          *string     `bson:"deletedBy,omitempty" json:"deletedBy,omitempty"`
+	Source             *string     `bson:"source,omitempty" json:"source,omitempty"`
+	SourceType         *string     `bson:"sourceType,omitempty" json:"sourceType,omitempty"`
+	SourceHash         *string     `bson:"sourceHash,omitempty" json:"sourceHash,omitempty"`
+	Playlist           *string     `bson:"playlist,omitempty" json:"playlist,omitempty"`
+	MediaLayout        *string     `bson:"mediaLayout,omitempty" json:"mediaLayout,omitempty"`
+	AudioTrackCount    *int        `bson:"audioTrackCount,omitempty" json:"audioTrackCount,omitempty"`
+	SubtitleTrackCount *int        `bson:"subtitleTrackCount,omitempty" json:"subtitleTrackCount,omitempty"`
 }
 
 // File represents a file/folder/space record.

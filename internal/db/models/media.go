@@ -9,11 +9,22 @@ import (
 // MediaMetadata holds embedded metadata for a Media record.
 // Matches: mediaMetadataSchema (TS)
 type MediaMetadata struct {
-	Size      interface{} `bson:"size,omitempty" json:"size,omitempty"`
-	Width     int         `bson:"width" json:"width"`
-	Height    int         `bson:"height" json:"height"`
-	Duration  float64     `bson:"duration" json:"duration"`
-	DirectURL *string     `bson:"directUrl,omitempty" json:"directUrl,omitempty"`
+	Size        interface{} `bson:"size,omitempty" json:"size,omitempty"`
+	Width       int         `bson:"width" json:"width"`
+	Height      int         `bson:"height" json:"height"`
+	Duration    float64     `bson:"duration" json:"duration"`
+	DirectURL   *string     `bson:"directUrl,omitempty" json:"directUrl,omitempty"`
+	SourceIndex *int        `bson:"sourceIndex,omitempty" json:"sourceIndex,omitempty"`
+	SourceCodec *string     `bson:"sourceCodec,omitempty" json:"sourceCodec,omitempty"`
+	Codec       *string     `bson:"codec,omitempty" json:"codec,omitempty"`
+	Language    *string     `bson:"language,omitempty" json:"language,omitempty"`
+	Title       *string     `bson:"title,omitempty" json:"title,omitempty"`
+	IsDefault   *bool       `bson:"isDefault,omitempty" json:"isDefault,omitempty"`
+	IsForced    *bool       `bson:"isForced,omitempty" json:"isForced,omitempty"`
+	Channels    *int        `bson:"channels,omitempty" json:"channels,omitempty"`
+	SampleRate  *int        `bson:"sampleRate,omitempty" json:"sampleRate,omitempty"`
+	Bitrate     *int64      `bson:"bitrate,omitempty" json:"bitrate,omitempty"`
+	MediaLayout *string     `bson:"mediaLayout,omitempty" json:"mediaLayout,omitempty"`
 }
 
 // PrewarmData holds cache prewarm statistics.
