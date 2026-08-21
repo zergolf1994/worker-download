@@ -33,39 +33,61 @@ func completeSeparatedMedia(
 	destination := uploadDestinationNone
 	paths := make(map[string]string, len(assets))
 
-	if s3Storage, err := resolveS3VideoStorage(ctx); err == nil {
-		storage = s3Storage
-		total := totalAssetSize(assets)
-		var completed int64
-		uploadedKeys := make([]string, 0, len(assets))
-		trackUpload := trackedBytes(ctx, process.ID, slug, "upload")
-		var permanentErr error
-		for _, asset := range assets {
-			key := s3VideoObjectKey(file.ID, asset.FileName)
-			base := completed
-			err := uploader.UploadToS3(ctx, s3Storage, asset.Path, key, func(done, _ int64) {
-				trackUpload(base+done, total)
-			})
-			if err != nil {
-				if cause := context.Cause(ctx); cause != nil {
-					return cause
+	if !hasAvailableLocalStorage(ctx) {
+		if s3Storage, err := resolveS3VideoStorage(ctx); err == nil {
+			storage = s3Storage
+			total := totalAssetSize(assets)
+			var completed int64
+			uploadedKeys := make([]string, 0, len(assets))
+			trackUpload := trackedBytes(ctx, process.ID, slug, "upload")
+			var permanentErr error
+			for _, asset := range assets {
+				key := s3VideoObjectKey(file.ID, asset.FileName)
+				base := completed
+				err := uploader.UploadToS3(ctx, s3Storage, asset.Path, key, func(done, _ int64) {
+					trackUpload(base+done, total)
+				})
+				if err != nil {
+					if cause := context.Cause(ctx); cause != nil {
+						return cause
+					}
+					permanentErr = fmt.Errorf("upload separated asset %s: %w", asset.FileName, err)
+					break
 				}
-				permanentErr = fmt.Errorf("upload separated asset %s: %w", asset.FileName, err)
-				break
+				paths[asset.FileName] = key
+				uploadedKeys = append(uploadedKeys, key)
+				completed += asset.Size
 			}
-			paths[asset.FileName] = key
-			uploadedKeys = append(uploadedKeys, key)
-			completed += asset.Size
+			if permanentErr == nil {
+				destination = uploadDestinationS3Video
+			} else {
+				utils.LogMain("⚠️  [%s] Permanent S3 separated upload failed: %v — falling back to Temp → Local", slug, permanentErr)
+				for _, key := range uploadedKeys {
+					if deleteErr := downloader.DeleteFromS3(s3Storage, key); deleteErr != nil {
+						log.Printf("⚠️  [%s] Failed to remove partial permanent object %s: %v", slug, key, deleteErr)
+					}
+				}
+				if err := fallbackSeparatedToTemp(ctx, process, file, slug, assets, videoWidth, videoHeight, videoDuration); err != nil {
+					return err
+				}
+				completeStep(ctx, process.ID, "upload")
+				downloader.Cleanup(downloadDir)
+				return nil
+			}
 		}
-		if permanentErr == nil {
-			destination = uploadDestinationS3Video
-		} else {
-			utils.LogMain("⚠️  [%s] Permanent S3 separated upload failed: %v — falling back to Temp → Local", slug, permanentErr)
-			for _, key := range uploadedKeys {
-				if deleteErr := downloader.DeleteFromS3(s3Storage, key); deleteErr != nil {
-					log.Printf("⚠️  [%s] Failed to remove partial permanent object %s: %v", slug, key, deleteErr)
+	}
+	if destination == uploadDestinationNone {
+		if localStorage, localErr := resolveConfiguredLocalStorage(ctx); localErr == nil {
+			storage = localStorage
+			for _, asset := range assets {
+				if _, err := uploader.MoveFilesLocal(config.AppConfig.StoragePath, file.ID, asset.Path, asset.FileName, nil); err != nil {
+					return fmt.Errorf("install separated asset %s: %w", asset.FileName, err)
 				}
+				paths[asset.FileName] = file.ID + "/" + asset.FileName
 			}
+			destination = uploadDestinationLocal
+		} else {
+			utils.LogMain("⚠️  [%s] Staging separated media in Temp for Local-first placement", slug)
 			if err := fallbackSeparatedToTemp(ctx, process, file, slug, assets, videoWidth, videoHeight, videoDuration); err != nil {
 				return err
 			}
@@ -73,23 +95,6 @@ func completeSeparatedMedia(
 			downloader.Cleanup(downloadDir)
 			return nil
 		}
-	} else if config.AppConfig.StorageId != "" {
-		storage = &models.Storage{ID: config.AppConfig.StorageId}
-		for _, asset := range assets {
-			if _, err := uploader.MoveFilesLocal(config.AppConfig.StoragePath, file.ID, asset.Path, asset.FileName, nil); err != nil {
-				return fmt.Errorf("install separated asset %s: %w", asset.FileName, err)
-			}
-			paths[asset.FileName] = file.ID + "/" + asset.FileName
-		}
-		destination = uploadDestinationLocal
-	} else {
-		utils.LogMain("⚠️  [%s] Permanent S3 unavailable — falling back to Temp → Local", slug)
-		if err := fallbackSeparatedToTemp(ctx, process, file, slug, assets, videoWidth, videoHeight, videoDuration); err != nil {
-			return err
-		}
-		completeStep(ctx, process.ID, "upload")
-		downloader.Cleanup(downloadDir)
-		return nil
 	}
 
 	completeStep(ctx, process.ID, "upload")
@@ -211,7 +216,7 @@ func fallbackSeparatedToTemp(
 		}); err != nil {
 			return fmt.Errorf("upload separated fallback %s: %w", asset.FileName, err)
 		}
-		mediaType, mimeType, installTarget := asset.Kind, asset.MimeType, "local"
+		mediaType, mimeType := asset.Kind, asset.MimeType
 		var resolution *string
 		if asset.Kind == downloader.SplitAssetVideo {
 			value := enums.ResolutionOriginal
@@ -222,7 +227,7 @@ func fallbackSeparatedToTemp(
 			FileName: asset.FileName, Status: "completed", Size: asset.Size,
 			MimeType: &mimeType, Path: &key, SourceType: enums.IngestSourceTypeProcessed,
 			MediaType: &mediaType, Resolution: resolution, MediaMetadata: splitAssetMetadata(asset),
-			InstallTarget: &installTarget, CreatedAt: now, UpdatedAt: now,
+			CreatedAt: now, UpdatedAt: now,
 		}
 		existing, _ := models.IngestModel.FindOne(ctx, bson.M{
 			"fileId": file.ID, "fileName": asset.FileName,

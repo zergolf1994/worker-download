@@ -503,38 +503,42 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 
 	startStep(ctx, process.ID, "upload")
 
-	if s3VideoStorage, err := resolveS3VideoStorage(ctx); err == nil {
-		objectKey = s3VideoObjectKey(file.ID, fileName)
-		log.Printf("📦 [%s] S3 video storage resolved: %s", slug, s3VideoStorage.Name)
-		utils.LogMain("📤 [%s] UPLOAD → S3 video %s", slug, s3VideoStorage.Name)
-		if err := uploader.UploadToS3(ctx, s3VideoStorage, mp4Path, objectKey, trackedBytes(ctx, process.ID, slug, "upload")); err != nil {
-			if cause := context.Cause(ctx); cause != nil {
-				downloader.Cleanup(downloadDir)
-				return cause
+	if !hasAvailableLocalStorage(ctx) {
+		if s3VideoStorage, err := resolveS3VideoStorage(ctx); err == nil {
+			objectKey = s3VideoObjectKey(file.ID, fileName)
+			log.Printf("📦 [%s] S3 video storage resolved: %s", slug, s3VideoStorage.Name)
+			utils.LogMain("📤 [%s] UPLOAD → S3 video %s", slug, s3VideoStorage.Name)
+			if err := uploader.UploadToS3(ctx, s3VideoStorage, mp4Path, objectKey, trackedBytes(ctx, process.ID, slug, "upload")); err != nil {
+				if cause := context.Cause(ctx); cause != nil {
+					downloader.Cleanup(downloadDir)
+					return cause
+				}
+				log.Printf("⚠️  [%s] Direct S3 video upload failed: %v — trying fallback", slug, err)
+			} else {
+				destination = uploadDestinationS3Video
+				storage = s3VideoStorage
+				log.Printf("✅ [%s] Direct S3 video upload complete", slug)
 			}
-			log.Printf("⚠️  [%s] Direct S3 video upload failed: %v — trying fallback", slug, err)
-		} else {
-			destination = uploadDestinationS3Video
-			storage = s3VideoStorage
-			log.Printf("✅ [%s] Direct S3 video upload complete", slug)
 		}
 	}
 
 	if destination == uploadDestinationNone && localStorageID != "" {
-		// ─── FALLBACK: LOCAL (self-hosted) ───────────────────
-		localStoragePath := config.AppConfig.StoragePath
-		if localStoragePath == "" {
-			return fmt.Errorf("local STORAGE_ID is set but STORAGE_PATH is empty")
+		if _, localErr := resolveConfiguredLocalStorage(ctx); localErr == nil {
+			// ─── FALLBACK: LOCAL (self-hosted) ───────────────────
+			localStoragePath := config.AppConfig.StoragePath
+			if localStoragePath == "" {
+				return fmt.Errorf("local STORAGE_ID is set but STORAGE_PATH is empty")
+			}
+			utils.LogMain("📤 [%s] UPLOAD → local storage (fallback)", slug)
+			log.Printf("📤 [%s] Moving to local storage...", slug)
+			if _, err := uploader.MoveFilesLocal(localStoragePath, file.ID, mp4Path, fileName, &uploader.LocalUploadProgress{
+				OnProgress: trackedBytes(ctx, process.ID, slug, "upload"),
+			}); err != nil {
+				return fmt.Errorf("local move: %w", err)
+			}
+			storage = &models.Storage{ID: localStorageID}
+			destination = uploadDestinationLocal
 		}
-		utils.LogMain("📤 [%s] UPLOAD → local storage (fallback)", slug)
-		log.Printf("📤 [%s] Moving to local storage...", slug)
-		if _, err := uploader.MoveFilesLocal(localStoragePath, file.ID, mp4Path, fileName, &uploader.LocalUploadProgress{
-			OnProgress: trackedBytes(ctx, process.ID, slug, "upload"),
-		}); err != nil {
-			return fmt.Errorf("local move: %w", err)
-		}
-		storage = &models.Storage{ID: localStorageID}
-		destination = uploadDestinationLocal
 	}
 
 	if destination == uploadDestinationNone {
@@ -576,7 +580,7 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 		// ─── S3 PATH: Create ingest + set ready_original ────
 		ingestPath := objectKey // ต้องตรงกับ key ที่อัพจริงเสมอ
 		mimeType := "video/mp4"
-		mediaType, installTarget := enums.MediaTypeVideo, "local"
+		mediaType := enums.MediaTypeVideo
 		layout := config.AppConfig.MediaLayout
 		mediaMetadata := &models.MediaMetadata{Size: fileSize, Width: int(videoWidth), Height: int(videoHeight), Duration: float64(videoDuration), MediaLayout: &layout}
 		ingest := models.Ingest{
@@ -590,9 +594,8 @@ func run(ctx context.Context, process *models.VideoProcess) error {
 			Path:       &ingestPath,
 			SourceType: enums.IngestSourceTypeProcessed,
 			MediaType:  &mediaType, Resolution: &resolution, MediaMetadata: mediaMetadata,
-			InstallTarget: &installTarget,
-			CreatedAt:     now,
-			UpdatedAt:     now,
+			CreatedAt: now,
+			UpdatedAt: now,
 		}
 		existingIngest, findErr := models.IngestModel.FindOne(ctx, bson.M{
 			"fileId":     file.ID,

@@ -62,6 +62,39 @@ func reusableSourceFile(path string) (os.FileInfo, bool) {
 
 // resolveS3VideoStorage finds directly playable, durable S3 storage. originUrl
 // is required because storage-node/nginx-vod reads the uploaded MP4 through it.
+const localStorageMaxPercent = 95.0
+
+func localStorageFilter() bson.M {
+	return bson.M{
+		"enable": true,
+		"status": enums.StorageStatusOnline,
+		"type":   enums.StorageTypeLocal,
+		"$or": []bson.M{
+			{"capacity.percentage": bson.M{"$lt": localStorageMaxPercent}},
+			{"capacity.percentage": bson.M{"$exists": false}},
+			{"capacity": bson.M{"$exists": false}},
+		},
+	}
+}
+
+func hasAvailableLocalStorage(ctx context.Context) bool {
+	count, err := models.StorageModel.CountDocuments(ctx, localStorageFilter())
+	return err == nil && count > 0
+}
+
+func resolveConfiguredLocalStorage(ctx context.Context) (*models.Storage, error) {
+	if config.AppConfig.StorageId == "" {
+		return nil, fmt.Errorf("local storage is not configured")
+	}
+	filter := localStorageFilter()
+	filter["_id"] = config.AppConfig.StorageId
+	storage, err := models.StorageModel.FindOne(ctx, filter)
+	if err != nil {
+		return nil, fmt.Errorf("configured local storage cannot accept new files")
+	}
+	return storage, nil
+}
+
 func resolveS3VideoStorage(ctx context.Context) (*models.Storage, error) {
 	filter := bson.M{
 		"enable":    true,
